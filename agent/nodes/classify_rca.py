@@ -149,8 +149,8 @@ Once you've gathered enough context, return your analysis in JSON format inside 
 </result>"""
 
     # Build initial message with context
-    exc_type = state.issue_data.get('exception_type', 'Unknown')
-    exc_msg = state.issue_data.get('exception_message', '')
+    exc_type = state.issue_data.get("exception_type", "Unknown")
+    exc_msg = state.issue_data.get("exception_message", "")
 
     # Truncate code context for readability
     code_ctx = state.code_context

@@ -300,7 +300,7 @@ class MCPClient:
 
                 # Skip notifications (no "id" field)
                 if "id" not in response:
-                    method = response.get('method', 'unknown')
+                    method = response.get("method", "unknown")
                     logger.debug(f"Skipping notification from {server_name}: {method}")
                     continue
 

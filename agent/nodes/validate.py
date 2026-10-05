@@ -314,9 +314,9 @@ def _check_symptom_hiding(state: AgentState) -> list[str]:
             if "except:" in line or "except Exception:" in line:
                 # Look ahead for proper handling in next few lines
                 next_lines = added_lines[i + 1 : i + 5] if i + 1 < len(added_lines) else []
-                has_logging = any("log" in l.lower() for l in next_lines)
-                has_raise = any("raise" in l for l in next_lines)
-                has_pass = any(l.strip() == "pass" for l in next_lines)
+                has_logging = any("log" in line.lower() for line in next_lines)
+                has_raise = any("raise" in line for line in next_lines)
+                has_pass = any(line.strip() == "pass" for line in next_lines)
 
                 if has_pass and not has_logging:
                     issues.append(
@@ -340,8 +340,8 @@ def _check_symptom_hiding(state: AgentState) -> list[str]:
             if "return None" in line or "return ''" in line or "return []" in line:
                 prev_lines = added_lines[max(0, i - 3) : i]
                 # If returning default after except without logging, flag it
-                if any("except" in l for l in prev_lines):
-                    has_logging = any("log" in l.lower() for l in prev_lines)
+                if any("except" in line for line in prev_lines):
+                    has_logging = any("log" in line.lower() for line in prev_lines)
                     if not has_logging:
                         issues.append(
                             f"File {file_path}: Returning default value after exception "

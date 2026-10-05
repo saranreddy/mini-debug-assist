@@ -22,12 +22,12 @@ from demo_app.config import config
 # Maps to Uber's ClickHouse-based logging platform that the agent queries
 
 logger = logging.getLogger("demo_app")
-logHandler = logging.StreamHandler()
+log_handler = logging.StreamHandler()
 formatter = jsonlogger.JsonFormatter(
     "%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d"
 )
-logHandler.setFormatter(formatter)
-logger.addHandler(logHandler)
+log_handler.setFormatter(formatter)
+logger.addHandler(log_handler)
 logger.setLevel(logging.INFO)
 
 
