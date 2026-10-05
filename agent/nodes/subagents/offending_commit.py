@@ -35,15 +35,21 @@ def offending_commit_subagent(state_dict: dict[str, Any], config: AgentConfig) -
     
     if config.mode == "mock":
         result = _mock_commit_analysis(issue_data)
+        turns = 1
     else:
-        result = _find_commit_with_github_mcp(issue_data, code_context, config)
+        result, turns = _find_commit_with_github_mcp(issue_data, code_context, config)
     
     # Add result to subagent_results
     subagent_results = state_dict.get("subagent_results", {})
     subagent_results["offending_commit"] = result
     
+    # Track turns
+    turn_count = state_dict.get("turn_count", {})
+    turn_count["subagent_offending_commit"] = turns
+    
     return {
         "subagent_results": subagent_results,
+        "turn_count": turn_count,
     }
 
 
@@ -95,17 +101,38 @@ def _find_commit_with_github_mcp(
     config: AgentConfig
 ) -> SubagentResult:
     """
-    Find offending commit using GitHub MCP.
+    Find offending commit using bounded tool-use.
     
-    Would use github_mcp to:
-    1. Search recent commits touching the error file
-    2. Git blame on the error line
-    3. Compare with error timeline
+    Analyzes recent commits and correlates with error timeline.
     """
-    # In production, would:
-    # 1. Parse stack trace for file:line
-    # 2. Call github_mcp.search_code to find file
-    # 3. Call git blame via GitHub API
-    # 4. Correlate commit timestamp with error start time
-    logger.warning("GitHub MCP commit search not implemented, using mock")
-    return _mock_commit_analysis(issue_data)
+    from agent.nodes.subagents.common import invoke_subagent_llm
+    import json
+    
+    system_prompt = """You are a commit analyzer finding the bug introduction.
+
+Use git blame and recent commits to identify which change caused the bug.
+
+Return your analysis in JSON format inside <result> tags:
+
+<result>
+{
+  "hypothesis": "Which commit likely introduced the bug",
+  "confidence": 0.0 to 1.0,
+  "evidence": ["List of supporting evidence from commits"]
+}
+</result>"""
+    
+    user_message = f"""Issue: {issue_data.get('exception_type', 'Unknown')}
+Stack Trace: {issue_data.get('stack_trace', 'N/A')[:500]}
+
+Code Context:
+{json.dumps({k: v[:200] for k, v in code_context.items()}, indent=2) if code_context else "No code context"}
+
+Find which recent commit introduced this bug."""
+    
+    return invoke_subagent_llm(
+        subagent_type="offending_commit",
+        system_prompt=system_prompt,
+        user_message=user_message,
+        config=config,
+    )

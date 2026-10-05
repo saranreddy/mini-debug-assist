@@ -213,14 +213,30 @@ def _handle_low_confidence(
     
     if retry_count == 0:
         # One cheap retry of weakest subagent
-        weakest = _find_weakest_subagent(state)
-        logger.info(f"Attempting one retry of weakest subagent: {weakest}")
+        weakest_name = _find_weakest_subagent(state)
+        logger.info(f"Attempting one retry of weakest subagent: {weakest_name}")
         
-        state.turn_count["consolidator_retry"] = 1
+        # Re-run with higher turn cap and other hypotheses as context
+        retry_result = _retry_subagent(state, weakest_name, merged)
         
-        # In a full implementation, would re-run the weakest subagent
-        # For now, just log and escalate
-        logger.warning("Retry logic not fully implemented, escalating")
+        if retry_result:
+            # Update state with retry result
+            state.subagent_results[weakest_name] = retry_result
+            state.turn_count["consolidator_retry"] = 1
+            
+            # Re-check agreement and confidence
+            new_agreement = _check_subagent_agreement(state)
+            new_confidence = _compute_overall_confidence(state)
+            
+            logger.info(
+                f"After retry: confidence={new_confidence:.2f}, "
+                f"agreement={new_agreement:.2f}"
+            )
+            
+            # If improved, proceed
+            if new_confidence >= CONFIDENCE_THRESHOLD and new_agreement >= AGREEMENT_THRESHOLD:
+                logger.info("✓ Retry improved results, proceeding to fix")
+                return state
     
     # Escalate with evidence packet
     state.needs_human_escalation = True
@@ -248,13 +264,30 @@ def _handle_disagreement(
     
     if retry_count == 0:
         # One cheap retry of weakest subagent
-        weakest = _find_weakest_subagent(state)
-        logger.info(f"Attempting one retry of weakest subagent: {weakest}")
+        weakest_name = _find_weakest_subagent(state)
+        logger.info(f"Attempting one retry of weakest subagent: {weakest_name}")
         
-        state.turn_count["consolidator_retry"] = 1
+        # Re-run with context from other subagents
+        retry_result = _retry_subagent(state, weakest_name, merged)
         
-        # Would re-run the weakest subagent
-        logger.warning("Retry logic not fully implemented, escalating")
+        if retry_result:
+            # Update state with retry result
+            state.subagent_results[weakest_name] = retry_result
+            state.turn_count["consolidator_retry"] = 1
+            
+            # Re-check agreement and confidence
+            new_agreement = _check_subagent_agreement(state)
+            new_confidence = _compute_overall_confidence(state)
+            
+            logger.info(
+                f"After retry: confidence={new_confidence:.2f}, "
+                f"agreement={new_agreement:.2f}"
+            )
+            
+            # If improved, proceed
+            if new_confidence >= CONFIDENCE_THRESHOLD and new_agreement >= AGREEMENT_THRESHOLD:
+                logger.info("✓ Retry improved agreement, proceeding to fix")
+                return state
     
     # Escalate with evidence packet showing disagreement
     hypotheses_str = "\n".join([
@@ -285,3 +318,88 @@ def _find_weakest_subagent(state: AgentState) -> str:
     )
     
     return weakest[0]
+
+
+def _retry_subagent(
+    state: AgentState,
+    subagent_name: str,
+    merged: dict
+) -> SubagentResult | None:
+    """
+    Re-run a subagent with higher turn cap and context from other subagents.
+    
+    Args:
+        state: Current agent state
+        subagent_name: Name of subagent to retry (breadcrumbs, flag_correlation, offending_commit)
+        merged: Merged hypotheses from all subagents
+    
+    Returns:
+        New SubagentResult or None if retry fails
+    """
+    from agent.nodes.subagents.common import invoke_subagent_llm
+    from agent.config import AgentConfig
+    import json
+    
+    logger.info(f"Retrying {subagent_name} with context from other subagents")
+    
+    # Get config (use from state or create default)
+    # In real implementation, would pass from consolidator_node params
+    config = AgentConfig.from_env(state.issue_data.get("mode", "aws"))
+    
+    # Build context from other subagents
+    other_hypotheses = []
+    for name, result in state.subagent_results.items():
+        if name != subagent_name:
+            if isinstance(result, dict):
+                hyp = result.get("hypothesis", "Unknown")
+                conf = result.get("confidence", 0)
+            else:
+                hyp = result.hypothesis
+                conf = result.confidence
+            other_hypotheses.append(f"{name}: {hyp} (confidence: {conf:.2f})")
+    
+    context_text = "\n".join(other_hypotheses) if other_hypotheses else "No other hypotheses"
+    
+    # Build retry prompt with context
+    system_prompt = f"""You are re-analyzing as the {subagent_name} subagent.
+
+Other subagents have proposed:
+{context_text}
+
+Primary RCA: {state.rca_result.root_cause if state.rca_result else 'Unknown'}
+
+Your first analysis had low confidence or disagreed. 
+Re-analyze with this additional context.
+
+Return your analysis in JSON format inside <result> tags:
+
+<result>
+{{
+  "hypothesis": "Your refined hypothesis",
+  "confidence": 0.0 to 1.0,
+  "evidence": ["Supporting evidence"]
+}}
+</result>"""
+    
+    user_message = f"""Issue: {state.issue_data.get('exception_type', 'Unknown')}
+
+Logs: {json.dumps(state.logs[:10], indent=2) if state.logs else "No logs"}
+
+Code Context: {json.dumps({k: v[:200] for k, v in state.code_context.items()}, indent=2) if state.code_context else "No code context"}
+
+Re-analyze with the context from other subagents."""
+    
+    try:
+        result, turns = invoke_subagent_llm(
+            subagent_type=subagent_name,
+            system_prompt=system_prompt,
+            user_message=user_message,
+            config=config._replace(max_turns_subagent=10),  # Higher turn cap for retry
+        )
+        
+        logger.info(f"Retry complete: confidence={result.confidence:.2f}, turns={turns}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Retry failed: {e}")
+        return None

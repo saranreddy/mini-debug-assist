@@ -34,15 +34,21 @@ def flag_correlation_subagent(state_dict: dict[str, Any], config: AgentConfig) -
     
     if config.mode == "mock":
         result = _mock_flag_correlation(issue_data)
+        turns = 1
     else:
-        result = _analyze_flag_correlation_with_mcp(issue_data, config)
+        result, turns = _analyze_flag_correlation_with_mcp(issue_data, config)
     
     # Add result to subagent_results
     subagent_results = state_dict.get("subagent_results", {})
     subagent_results["flag_correlation"] = result
     
+    # Track turns
+    turn_count = state_dict.get("turn_count", {})
+    turn_count["subagent_flag_correlation"] = turns
+    
     return {
         "subagent_results": subagent_results,
+        "turn_count": turn_count,
     }
 
 
@@ -102,13 +108,38 @@ def _analyze_flag_correlation_with_mcp(
     config: AgentConfig
 ) -> SubagentResult:
     """
-    Analyze flag correlation using AppConfig MCP.
+    Analyze flag correlation using bounded tool-use.
     
-    Would query appconfig_flags MCP to check flag states and timelines.
+    Checks for correlation with feature flag changes or config updates.
     """
-    # In production, would:
-    # 1. Query list_flags via MCP
-    # 2. Compare flag change timestamps with error timestamps
-    # 3. Check error rate correlation with flag rollout %
-    logger.warning("MCP flag correlation not implemented, using mock")
-    return _mock_flag_correlation(issue_data)
+    from agent.nodes.subagents.common import invoke_subagent_llm
+    import json
+    
+    system_prompt = """You are a feature flag correlation analyzer.
+
+Check if the error correlates with recent feature flag or config changes.
+
+Return your analysis in JSON format inside <result> tags:
+
+<result>
+{
+  "hypothesis": "Is this correlated with a flag/config change",
+  "confidence": 0.0 to 1.0,
+  "evidence": ["List of supporting evidence"]
+}
+</result>"""
+    
+    user_message = f"""Issue: {issue_data.get('exception_type', 'Unknown')}
+Timestamp: {issue_data.get('timestamp', 'Unknown')}
+
+Recent Config/Flag Context:
+{json.dumps(issue_data.get('recent_changes', []), indent=2)}
+
+Check for correlation with feature flags or config changes."""
+    
+    return invoke_subagent_llm(
+        subagent_type="flag_correlation",
+        system_prompt=system_prompt,
+        user_message=user_message,
+        config=config,
+    )

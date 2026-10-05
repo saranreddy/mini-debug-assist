@@ -114,6 +114,9 @@ class AgentState:
     validation_attempts: int = 0
     max_validation_retries: int = 3
     
+    # Fix history (for retry feedback loop)
+    fix_history: list[dict[str, Any]] = field(default_factory=list)  # Previous attempts with failures
+    
     # Output (from create_diff node)
     pr_url: Optional[str] = None
     

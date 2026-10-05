@@ -143,7 +143,17 @@ Once you've analyzed the code, return your fix in JSON format inside <result> ta
 
 The diff should be a valid unified diff that can be applied with `patch`."""
     
-    # Build initial message
+    # Build initial message with previous attempt feedback
+    previous_attempts_text = ""
+    if state.fix_history:
+        previous_attempts_text = "\n\n**PREVIOUS FIX ATTEMPTS (FAILED):**\n"
+        for i, attempt in enumerate(state.fix_history, 1):
+            previous_attempts_text += f"\n--- Attempt {i} ---\n"
+            previous_attempts_text += f"Diff:\n{attempt.get('diff', 'N/A')[:500]}\n\n"
+            previous_attempts_text += f"Failure Reason:\n{attempt.get('failure_reason', 'N/A')[:500]}\n"
+            if attempt.get('test_output'):
+                previous_attempts_text += f"Test Output:\n{attempt.get('test_output')[:500]}\n"
+    
     user_message = f"""Issue: {state.issue_title}
 
 Root Cause: {state.rca_result.root_cause if state.rca_result else 'Unknown'}
@@ -151,8 +161,9 @@ Confidence: {state.rca_result.confidence if state.rca_result else 0}
 
 Code Context:
 {json.dumps({k: v[:1000] + "..." for k, v in state.code_context.items()}, indent=2) if state.code_context else "No code context"}
+{previous_attempts_text}
 
-Generate a fix for this issue."""
+Generate a fix for this issue. {" **Learn from previous failures above.**" if state.fix_history else ""}"""
     
     messages = [
         {
