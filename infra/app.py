@@ -21,10 +21,13 @@ from stacks.observability_stack import ObservabilityStack
 
 app = cdk.App()
 
-# Environment
+# Environment - use CDK_DEFAULT_ACCOUNT and CDK_DEFAULT_REGION from AWS CLI config
+# This allows anyone to deploy to their own account without hardcoding
+import os
+
 env = cdk.Environment(
-    account=app.node.try_get_context("account"),
-    region=app.node.try_get_context("region") or "us-east-1",
+    account=os.environ.get("CDK_DEFAULT_ACCOUNT") or app.node.try_get_context("account"),
+    region=os.environ.get("CDK_DEFAULT_REGION") or app.node.try_get_context("region") or "us-east-1",
 )
 
 # Demo app stack (the service with bugs)

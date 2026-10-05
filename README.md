@@ -1,454 +1,558 @@
 # Mini Debug Assist
 
-A learning-grade replica of Uber's **Debug Assist** debugging-agent harness, built on AWS. This project demonstrates how to build an autonomous debugging agent that can detect production issues, perform root cause analysis, generate fixes, validate them, and create pull requests.
+[![CI](https://github.com/saranreddy/mini-debug-assist/actions/workflows/ci.yml/badge.svg)](https://github.com/saranreddy/mini-debug-assist/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![AWS CDK](https://img.shields.io/badge/AWS_CDK-2.150-orange.svg)](https://aws.amazon.com/cdk/)
 
-## 🎯 Project Goal
+**Download-and-deploy mini replica of Uber's Debug Assist**: A CloudWatch alarm wakes a LangGraph agent on Bedrock that finds the root cause, writes a fix, validates it with tests, and opens a PR.
 
-This is a **learning project** for understanding agentic AI architectures. The codebase prioritizes clarity, comments, and educational value over production optimization. Study it phase by phase using the [LEARNING_PATH.md](docs/LEARNING_PATH.md).
+A learning-focused demo of modern agentic patterns for platform engineers: Multi-agent orchestration via LangGraph, real-world AWS integration (Bedrock/CloudWatch/DynamoDB), MCP tool protocols, and autonomous code modification with safety guardrails.
 
-## 🏗️ Architecture Overview
+## Who Should Use This
 
-```mermaid
-flowchart TB
-    %% Styles
-    classDef demo fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    classDef agent fill:#f3e5f5,stroke:#5e35b1,stroke-width:2px
-    classDef subagent fill:#fce4ec,stroke:#c2185b,stroke-width:2px
-    classDef mcp fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    classDef aws fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    
-    %% Components
-    subgraph Demo["Demo App (demo_app/)"]
-        APP["FastAPI Service<br/>3 Planted Bugs"]
-        LOGS["Structured Logging"]
-        XRAY["X-Ray Tracing"]
-    end
-    
-    subgraph Agent["LangGraph Agent (agent/)"]
-        CC["context_collector<br/>(deterministic)"]
-        RCA["classify_rca<br/>(Claude Sonnet)"]
-        
-        subgraph Subagents["Parallel Subagents (3)"]
-            SA1["breadcrumbs"]
-            SA2["flag_correlation"]
-            SA3["offending_commit"]
-        end
-        
-        CONS["consolidator<br/>(merge + decide)"]
-        FIX["fix<br/>(Claude Opus)"]
-        VAL["validate<br/>(pytest + guards)"]
-        DIFF["create_diff"]
-    end
-    
-    subgraph MCP["MCP Servers (mcp_servers/)"]
-        MCW["CloudWatch Logs"]
-        MXR["X-Ray Traces"]
-        MGH["GitHub"]
-        MAC["AppConfig Flags"]
-    end
-    
-    subgraph AWS["AWS Infrastructure (infra/)"]
-        ECS["ECS Fargate"]
-        CW["CloudWatch"]
-        AC["AppConfig"]
-        BR["Bedrock"]
-    end
-    
-    APP --> LOGS & XRAY
-    LOGS --> CW
-    CC --> MCW & MXR
-    RCA --> MCW & MXR & MAC
-    
-    RCA -.->|Send fan-out| SA1 & SA2 & SA3
-    SA1 & SA2 & SA3 -.->|merge| CONS
-    
-    FIX --> MGH & MAC
-    DIFF --> MGH
-    
-    CC --> RCA
-    CONS --> FIX --> VAL
-    VAL -->|retry| FIX
-    VAL -->|success| DIFF
-    
-    Agent --> BR
-    Demo --> ECS
-    
-    class Demo demo
-    class Agent agent
-    class SA1,SA2,SA3 subagent
-    class MCP mcp
-    class AWS aws
-```
+This repo is for engineers learning about autonomous agents, AI-powered debugging, and event-driven AWS architectures—especially those building internal tooling or studying production agent patterns.
 
-## 🗺️ Component Mapping to Uber's System
+**Good fit when you want to:**
+- Study a complete multi-agent system (RCA, fix generation, validation, PR creation)
+- Learn LangGraph orchestration with parallel subagents and bounded tool loops
+- See Model Context Protocol (MCP) in practice with real stdio servers
+- Understand how Uber-style debugging agents work (based on their public talks)
+- Practice AWS Bedrock + CloudWatch + EventBridge workflows
 
-| **Mini Debug Assist** | **Uber's Debug Assist** | **Purpose** |
-|----------------------|------------------------|-------------|
-| FastAPI demo app | Production services | Service with bugs to debug |
-| CloudWatch Logs | ClickHouse logging platform | Structured log storage |
-| X-Ray | Jaeger | Distributed tracing |
-| AppConfig | Flipr | Feature flags |
-| GitHub MCP | Sourcegraph MCP | Code search and PR creation |
-| LangGraph pipeline | LangGraph pipeline | Fixed orchestration plan |
-| Claude via Bedrock | Claude (direct or gateway) | LLM inference |
-| context_collector | context_collector | Deterministic log pruning |
-| classify_rca | classify/RCA (Sonnet, 20 turns) | Root cause analysis |
-| fix | fix (Opus, 30-50 turns) | Generate code fix |
-| validate | bazel_test (Sonnet, 20 turns) | Run tests in sandbox |
-| create_diff | create_diff (Sonnet, 20 turns) | Create GitHub PR |
-| Skills markdown | ~3,000 skill marketplace | Domain knowledge base |
-| ECS Fargate | Kubernetes | Container orchestration |
-| CodeBuild | Bazel CI | Test execution |
+**Not a good fit when you need:**
+- Production-ready debugging for high-scale systems (this is a learning demo with simplified patterns)
+- Support for languages beyond Python (currently Python-only demo app)
+- Out-of-the-box multi-tenancy or enterprise auth (single-account demo)
+- Real mobile/simulator validation (Uber's Android/iOS validation path not included)
 
-## 🚀 Quick Start
+**Cost note**: A short demo costs ~$1-5 for Fargate, Bedrock API calls, and AWS resources. Always run `make destroy` when done to avoid ongoing charges.
 
-### Prerequisites
+## Architecture
 
-- Python 3.11+
-- AWS CLI configured (for real mode)
-- GitHub token (for PR creation)
-- AWS Bedrock model access (Claude Sonnet & Opus)
+![Mini Debug Assist Learning Path - 16 steps from CloudWatch alarm to merged PR](docs/learning-path.png)
 
-### Installation
+*The 16-step learning path diagram showing: AWS infrastructure (alarm/logs/EventBridge), LangGraph agent harness (context/classify/subagents/fix/validate), MCP tools, and human gates. [View editable HTML](docs/learning-path.html)*
+
+### Key Components
+
+1. **AWS Trigger Path**: CloudWatch alarm on error count → EventBridge rule → ECS Fargate task with DynamoDB deduplication
+2. **LangGraph Orchestration**: Supervisor pattern with conditional routing across 11 nodes
+3. **Parallel RCA Subagents**: breadcrumbs, flag_correlation, offending_commit run concurrently via `Send`
+4. **Consolidator**: Aggregates subagent evidence, retries weakest on disagreement, escalates to human on low confidence
+5. **Fix Generation**: Claude Opus 5.5 with bounded tool loops (max 50 turns), reads fix_history for retry feedback
+6. **Validation**: Copies repo to temp dir, applies patch with `git apply`/`patch -p1`, runs pytest, checks for symptom-hiding
+7. **GitHub Integration**: Commits changes via Git Database API, opens PR with RCA summary and test results
+8. **MCP Servers**: CloudWatch Logs, X-Ray, GitHub, AppConfig flags—all JSON-RPC 2.0 over stdio
+9. **Safety Guardrails**: Symptom-hiding detection (rejects try/except: pass), turn caps, human-in-the-loop escalation gates
+
+### Component List
+
+- **Demo App** (FastAPI): Three planted bugs (KeyError, performance loop, division by zero)
+- **Agent Harness** (LangGraph + Bedrock): 11-node pipeline with Claude Sonnet 5.5 / Opus 5.5
+- **MCP Servers** (Python + official SDK): 4 servers (cloudwatch_logs, xray, github_mcp, appconfig_flags)
+- **AWS Infrastructure** (CDK): ECS, EventBridge, CloudWatch, DynamoDB, IAM with least privilege
+- **Test Suite**: 53 tests (unit + integration + e2e), all passing
+
+## Prerequisites
+
+- **AWS CLI** configured with credentials (`aws configure`)
+- **AWS CDK** >= 2.150 (`npm install -g aws-cdk`)
+- **Docker** (for building agent container image)
+- **Python** 3.12+
+- **Node.js** 20+ (for CDK)
+- **Bedrock Model Access**: Request access in AWS Console → Bedrock → Model access for:
+  - `anthropic.claude-sonnet-5-5` (US East inference profile)
+  - `anthropic.claude-opus-5-5` (US East inference profile)
+
+## Quick Start
+
+### 1. Check Prerequisites
 
 ```bash
-# Clone and install
-git clone <repo-url>
+make doctor
+```
+
+This checks AWS credentials, CDK, Docker, Python, and **Bedrock model access** for the configured Claude models. Fix any issues it reports.
+
+### 2. Run Locally in Mock Mode
+
+Test the full pipeline with no AWS costs:
+
+```bash
+make demo-local
+```
+
+This runs the agent in mock mode using test fixtures (`tests/fixtures/keyerror_issue.yaml`), simulating all AWS calls.
+
+### 3. Fork and Configure
+
+Fork this repo to your own GitHub account, then store your credentials:
+
+```bash
+# Clone your fork
+git clone https://github.com/YOUR-USERNAME/mini-debug-assist
 cd mini-debug-assist
-make install
 
-# Or manually
-pip install -e ".[dev,infra]"
+# Copy environment template
+cp .env.example .env
+
+# Edit .env and fill in:
+# - GITHUB_TOKEN (personal access token with 'repo' scope)
+# - GITHUB_REPO (your-username/mini-debug-assist)
+# - AWS_REGION (default: us-east-1)
+
+# Store token in Secrets Manager
+make setup-secrets
 ```
 
-### Run in Mock Mode (No AWS Credentials Required)
+The agent will open PRs in **your fork**, not the original repo.
+
+### 4. Bootstrap CDK (One-Time)
 
 ```bash
-# Run the demo app locally
-make run-demo
-
-# In another terminal, run the agent in mock mode
-make run-agent-mock
-
-# Or manually
-python -m agent.cli --mode mock --issue tests/fixtures/keyerror_issue.yaml
+make bootstrap
 ```
 
-The agent will:
-1. Load the issue fixture
-2. Perform RCA (mock mode uses predefined responses)
-3. Generate a fix
-4. Validate it (simulated)
-5. Output results to `./output/`
+This provisions CDK resources in your AWS account (S3 bucket for assets, IAM roles). Only needed once per account/region.
 
-### Run Tests
+### 5. Deploy Infrastructure
 
 ```bash
-make test
-
-# Tests include:
-# - Unit tests for demo app
-# - Tests that expose the 3 planted bugs (marked xfail)
-# - Agent graph tests
+make deploy
 ```
 
-## 🔔 How the Agent Wakes Up (Event-Driven Architecture)
+This provisions (~5 minutes):
+- Demo app (ECS Fargate service behind ALB)
+- CloudWatch log group + metric filter + alarm
+- EventBridge rule to trigger agent
+- Agent ECS task definition with Bedrock permissions
+- DynamoDB deduplication table
+- IAM roles with least privilege
 
-In production, the agent is triggered automatically by CloudWatch alarms:
+### 6. Verify Deployment
 
-### The Wake-Up Chain
-
-```mermaid
-sequenceDiagram
-    participant App as Demo App
-    participant CWL as CloudWatch Logs
-    participant Metric as CloudWatch Metric
-    participant Alarm as CloudWatch Alarm
-    participant EB as EventBridge
-    participant ECS as ECS Fargate
-    participant Agent as Debug Agent
-    participant DDB as DynamoDB
-    
-    App->>CWL: Structured JSON logs
-    Note over App,CWL: {"level":"ERROR","exception_type":"KeyError",...}
-    
-    CWL->>Metric: Metric filter extracts errors
-    Note over CWL,Metric: Dimensions: error_type, endpoint
-    
-    Metric->>Alarm: ErrorCount > threshold
-    Note over Metric,Alarm: 5 errors in 5 minutes
-    
-    Alarm->>EB: CloudWatch Alarm State Change event
-    Note over Alarm,EB: state.value = "ALARM"
-    
-    EB->>ECS: Trigger agent task
-    Note over EB,ECS: Container overrides:<br/>ISSUE_SOURCE=alarm<br/>ALARM_EVENT_JSON={...}
-    
-    ECS->>Agent: Start container
-    
-    Agent->>DDB: Check deduplication
-    Note over Agent,DDB: error_signature hash<br/>TTL: 1 hour
-    
-    alt First occurrence
-        DDB-->>Agent: Proceed (new signature)
-        Agent->>CWL: Query logs (Logs Insights)
-        Agent->>ECS: Fetch X-Ray traces
-        Agent->>Agent: RCA + subagents
-        Agent->>Agent: Generate fix
-        Agent->>Agent: Create PR
-    else Duplicate
-        DDB-->>Agent: Skip (recent investigation)
-        Agent->>ECS: Exit early
-    end
+```bash
+make smoke
 ```
 
-### Components
+This checks:
+- Demo app `/health` endpoint responds
+- CloudWatch alarm exists
+- EventBridge rule is enabled
+- DynamoDB table is active
+- ECS task definition exists
 
-1. **CloudWatch Logs Metric Filter**: Counts ERROR-level events
-   - Pattern: `{ $.level = "ERROR" }`
-   - Dimensions: `error_type` (from `$.exception_type`), `endpoint` (from `$.path`)
-   - Namespace: `MiniDebugAssist/Demo`
+### 7. Trigger a Bug
 
-2. **CloudWatch Alarm**: Triggers on high error rate
-   - Metric: `ErrorCount`
-   - Threshold: 5 errors in 5 minutes
-   - State: `ALARM` → triggers agent
+```bash
+make trigger-bug
+```
 
-3. **EventBridge Rule**: Event-driven trigger
-   - Pattern: `CloudWatch Alarm State Change` with `state.value = "ALARM"`
-   - Target: ECS Fargate task (agent)
-   - Passes alarm event via container environment
+This calls the demo app's `/user/3` endpoint 12 times to trigger the planted KeyError bug, causing the CloudWatch alarm to enter ALARM state. Wait ~1 minute for:
+- EventBridge to invoke the agent ECS task
+- Agent to investigate, write a fix, run tests, and open a PR
 
-4. **Deduplication (DynamoDB)**: Prevents duplicate investigations
-   - Key: `error_signature` (hash of alarm_name + error_type + endpoint)
-   - TTL: 1 hour (automatically cleaned up)
-   - Condition: Only insert if not exists or expired
+Watch the logs:
+```bash
+aws logs tail /aws/ecs/mini-debug-assist-agent --follow
+```
 
-5. **Agent Execution**:
-   - Reads `ALARM_EVENT_JSON` from environment
-   - Checks dedup table
-   - Queries CloudWatch Logs Insights (polls until complete)
-   - Fetches X-Ray traces for error window
-   - Fetches code context from GitHub
-   - Runs RCA with 3 parallel subagents
-   - Generates and validates fix
-   - Creates GitHub PR
+Watch for a PR in your fork on GitHub. The PR will include:
+- Root cause analysis summary
+- Unified diff of the fix
+- Test validation results
+- Link to the issue/alarm
 
-### Deduplication Logic
+### 8. Tear Down
 
-The agent uses an error signature to prevent duplicate investigations:
+```bash
+make destroy
+```
 
+This removes all AWS resources with `--force`, leaving nothing billable. The agent stack uses `RemovalPolicy.DESTROY` on all stateful resources (DynamoDB table, log groups, ECR images) for clean teardown.
+
+## Cost
+
+Designed to stay within Free Tier limits or cost a few dollars for a short demo:
+
+- **ECS Fargate**: $0.04/vCPU-hour + $0.004/GB-hour (agent task runs ~2-5 minutes per investigation)
+- **NAT Gateway**: $0.045/hour + $0.045/GB data processed (use public subnets to avoid; see Configuration)
+- **Application Load Balancer**: $0.0225/hour + $0.008/LCU-hour
+- **Bedrock API Calls**:
+  - Claude Sonnet 5.5: ~$0.003 per 1K input tokens, ~$0.015 per 1K output tokens
+  - Claude Opus 5.5: ~$0.015 per 1K input tokens, ~$0.075 per 1K output tokens
+  - Typical investigation: 50K-150K tokens total = **$0.50-$2.00**
+- **CloudWatch Logs**: $0.50/GB ingested (negligible for demo)
+- **DynamoDB**: On-demand pricing, first 25 RCU/WCU per month free (negligible for demo)
+- **EventBridge**: First 60M custom events/month to Lambda/ECS free (negligible for demo)
+
+**Estimated total cost for 5 investigations over 2 hours: $2-7**
+
+**Note**: If you deploy the demo app with a NAT Gateway in private subnets, add ~$0.09/hour ($2.16/day). Consider using public subnets (outbound internet via Internet Gateway) to save costs. See Configuration below.
+
+Always run `make destroy` when done to avoid ongoing charges.
+
+## Configuration
+
+### Environment Variables
+
+See [`.env.example`](.env.example) for all variables. Key settings:
+
+```bash
+# AWS
+AWS_REGION=us-east-1                  # Deploy region
+
+# GitHub (store via make setup-secrets)
+GITHUB_TOKEN=ghp_xxx...               # Personal access token with 'repo' scope
+GITHUB_REPO=your-username/mini-debug-assist
+
+# Bedrock Models (optional overrides)
+MODEL_CLASSIFY=us.anthropic.claude-sonnet-5-5
+MODEL_FIX=us.anthropic.claude-opus-5-5
+
+# MCP (optional, for testing)
+MCP_MOCK_MODE=false                   # true = in-process mocks, false = real stdio servers
+
+# LangSmith (optional observability)
+LANGSMITH_API_KEY=lsv2_pt_xxx...
+LANGSMITH_PROJECT=mini-debug-assist
+```
+
+### CDK Context (Optional)
+
+Override defaults in `infra/cdk.context.json` or pass via CLI:
+
+```bash
+cd infra
+cdk deploy --context usePublicSubnets=true  # Skip NAT Gateway, save cost
+```
+
+**Available contexts:**
+- `usePublicSubnets` (default: false): Set to `true` to deploy agent tasks in public subnets with Internet Gateway instead of private subnets with NAT Gateway. Saves ~$0.09/hour but exposes task to public internet (acceptable for demo).
+
+### Agent Retry Limits
+
+In `agent/config.py`:
 ```python
-signature = sha256(alarm_name + "|" + error_type + "|" + endpoint)[:32]
-
-# DynamoDB conditional put:
-# - If signature doesn't exist → investigate (first occurrence)
-# - If signature exists and TTL not expired → skip (duplicate)
-# - If signature expired → investigate (error recurred)
+max_validation_retries: int = 3        # Fix → validate retry loop
+max_turns_fix: int = 50                # Opus tool-use turns
+max_turns_classify: int = 20           # Sonnet tool-use turns
 ```
 
-This ensures that repeated alarms for the same error don't spawn multiple parallel investigations.
+## How It Maps to Uber's Debug Assist
 
-## 🐛 The Three Planted Bugs
+| Uber's Debug Assist | This Demo | Notes |
+|---------------------|-----------|-------|
+| 11 MCP servers (Jaeger, Sourcegraph, logging) | 4 MCP servers (CloudWatch, X-Ray, GitHub, AppConfig) | Simplified but same stdio protocol |
+| 8 agent types (Go/Java/Android/iOS/Web) | 1 agent type (Python web) | Pattern generalizes |
+| Phabricator diffs | GitHub PRs | Same Git workflow |
+| Bazel tests + mobile simulators | pytest in temp dir | Mobile validation not included |
+| Flipr feature flag rollbacks | AppConfig flags | Same mitigation pattern |
+| Metadata DB (investigation history) | DynamoDB deduplication | Simplified tracking |
+| Kubernetes runtime jobs | ECS Fargate tasks | Managed containers |
+| Claude 3 Opus/Sonnet | Claude 5.5 Opus/Sonnet | Latest models |
 
-### 1. KeyError Bug (`/user/{id}`)
+**Key differences**: Uber's system is production-hardened for massive scale (millions of crashes/day), multi-repo, and multi-platform. This demo focuses on learning the **architecture patterns** in a deployable, hackable form.
 
-```python
-# User 3 is missing the 'email' field
-email = user["email"]  # KeyError!
+## Current Status
+
+### ✅ Real Implementations
+
+**Agent Pipeline:**
+- ✅ LangGraph orchestration with 11 nodes (context → classify → subagents → consolidate → fix → validate → create_diff → human gate)
+- ✅ Parallel RCA subagents via `Send` with state merging (`breadcrumbs`, `flag_correlation`, `offending_commit`)
+- ✅ Consolidator retry/escalation logic based on confidence and agreement scores
+- ✅ Fix node with bounded tool loops (Bedrock Converse API, max 50 turns) and `fix_history` feedback
+- ✅ Validation node: copies repo to temp dir, applies patches with `git apply`/`patch -p1`, runs pytest
+- ✅ Symptom-hiding detection: rejects `try/except: pass`, silent failures, broad exception handling
+- ✅ GitHub PR creation: commits via Git Database API (blobs → tree → commit), includes RCA and test results
+
+**AWS Integration:**
+- ✅ CloudWatch alarm on error count (10 errors in 5 minutes)
+- ✅ EventBridge rule triggers ECS task on alarm state change
+- ✅ DynamoDB deduplication (one investigation per error signature per hour)
+- ✅ ECS Fargate task definition with Bedrock IAM permissions
+- ✅ Agent Docker image built from workspace via `ContainerImage.from_asset`
+- ✅ CloudWatch Logs and X-Ray tracing (optional in demo app)
+
+**MCP Integration:**
+- ✅ JSON-RPC 2.0 over stdio: `initialize`, `notifications/initialized`, `tools/list`, `tools/call`
+- ✅ Request/response matching by ID, skips notifications and log lines
+- ✅ 4 Python MCP servers using official `mcp` SDK (cloudwatch_logs, xray, github_mcp, appconfig_flags)
+- ✅ Real mode never silently falls back to mocks (returns `isError` on unknown tools)
+- ✅ Subprocess lifecycle management with timeouts and cleanup
+
+**Models:**
+- ✅ Claude Sonnet 5.5 for classify, subagents, validate, create_diff (fast, cost-effective)
+- ✅ Claude Opus 5.5 for fix and escalate (reasoning, complex code changes)
+- ✅ Cross-region inference profiles (`us.anthropic.claude-*`) for geo routing
+- ✅ Model IDs from AWS docs (Oct 2026): https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5-5.html
+
+**Testing:**
+- ✅ 53 tests passing (48 unit, 3 integration, 2 e2e)
+- ✅ Mock mode for local development (no AWS costs)
+- ✅ Regression tests for demo app bugs (marked xfail on unpatched app)
+- ✅ MCP protocol tests with real stdio servers
+
+### 🔧 Mock Mode (Preserved for Learning)
+
+When `mode="mock"` or `MCP_MOCK_MODE="true"`:
+- ✅ Context collection returns fixture data (no AWS API calls)
+- ✅ Classify returns mock RCA result (no Bedrock calls)
+- ✅ Fix returns mock changes (no Bedrock calls)
+- ✅ Validate returns mock pass/fail (no pytest execution)
+- ✅ Create_diff returns mock PR URL (no GitHub API calls)
+- ✅ MCP tools use in-process mocks (no stdio servers)
+
+**This is intentional for local development and testing without credentials.** Real mode works end-to-end when deployed to AWS.
+
+### 🚧 Not Yet Implemented
+
+- **Slack notifications**: MCP server exists but not wired to agent nodes
+- **Jira integration**: Would require additional MCP server
+- **Mobile emulators**: Uber's Android/iOS validation path not included
+- **Multi-repository support**: Currently single-repo only
+- **Skill marketplace**: Fix strategies are hardcoded (Uber uses a dynamic skill library)
+- **LangSmith traces**: Integration exists but optional (enable with `LANGSMITH_API_KEY`)
+
+## Learning Path
+
+The full learning journey is documented in [`docs/LEARNING_PATH.md`](docs/LEARNING_PATH.md), covering:
+
+1. How production errors wake the agent (EventBridge + ECS)
+2. LangGraph multi-agent orchestration patterns
+3. Bedrock Converse API with tool use
+4. MCP (Model Context Protocol) for tool integration
+5. Symptom-hiding detection and safety guardrails
+6. GitHub API integration (Git Database API)
+7. AWS infrastructure patterns (CDK, IAM least privilege)
+8. Testing strategies for agent systems
+
+**16-Step Visual Map**: See [diagram](docs/learning-path.png) showing the complete flow from alarm to merged PR.
+
+**External Resources**:
+- [Uber's Talk: Scalable AI Crash Triage (QCon 2024)](https://www.infoq.com/presentations/uber-ai-crash-triage/)
+- [LangGraph Multi-Agent Patterns](https://langchain-ai.github.io/langgraph/tutorials/multi_agent/)
+- [Model Context Protocol Spec](https://modelcontextprotocol.io/introduction)
+- [AWS Bedrock Converse API](https://docs.aws.amazon.com/bedrock/latest/userguide/conversation-inference.html)
+
+## Troubleshooting
+
+### Bedrock Access Denied
+
+**Error**: `AccessDeniedException` when calling Bedrock models.
+
+**Fix**:
+1. Go to AWS Console → Bedrock → Model access
+2. Request access for `Claude Sonnet 5.5` and `Claude Opus 5.5`
+3. Wait for approval (usually instant for Sonnet, may take 1-2 minutes for Opus)
+4. Run `make doctor` to verify access
+
+### Alarm Not Firing
+
+**Error**: Triggered bugs but no agent task started.
+
+**Check**:
+```bash
+# View alarm state
+aws cloudwatch describe-alarms --alarm-names mini-debug-assist-error-alarm
+
+# Check metric data
+aws cloudwatch get-metric-statistics \
+  --namespace "MiniDebugAssist/DemoApp" \
+  --metric-name ErrorCount \
+  --start-time $(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%S) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
+  --period 60 \
+  --statistics Sum
 ```
 
-**Fix**: Use `user.get("email", None)`
+**Common causes**:
+- Not enough errors (need 10 in 5 minutes): run `make trigger-bug` again
+- Metric filter not working: check CloudWatch Logs for demo app errors
+- Alarm evaluation period not met: wait full 5 minutes
 
-### 2. Performance Bug (`/report`)
+### PR Not Created
 
-```python
-# Recomputed every iteration - O(n*m)!
-for i in range(entries):
-    all_user_ids = [uid for uid in USERS_DB.keys()]  # Bad!
+**Error**: Agent ran but no PR appeared in GitHub.
+
+**Check**:
+```bash
+# View agent logs
+aws logs tail /aws/ecs/mini-debug-assist-agent --follow
+
+# Look for errors like:
+#   - "GitHub credentials not configured"
+#   - "Failed to create branch"
+#   - "Patch did not apply cleanly"
 ```
 
-**Fix**: Hoist computation outside loop
+**Common causes**:
+- GitHub token not stored: run `make setup-secrets` again
+- Target repo not forked: the agent opens PRs in **your fork**, not the original repo
+- Branch already exists: agent won't overwrite existing branches (delete manually or use new issue)
 
-### 3. Feature Flag Bug (`/discount`)
+### CDK Bootstrap Failed
 
-```python
-# When DISCOUNT_V2='on' and purchase_count=0
-discount_multiplier = 100 / purchase_count  # Division by zero!
+**Error**: `cdk deploy` fails with "This stack uses assets, so the toolkit stack must be deployed".
+
+**Fix**:
+```bash
+make bootstrap
+
+# If that fails, bootstrap explicitly:
+cdk bootstrap aws://ACCOUNT-ID/REGION
 ```
 
-**Fix**: Check for zero or rollback flag
+**Common cause**: First time deploying CDK in this account/region. Bootstrap is one-time per account/region.
 
-## 📁 Repository Structure
+### Docker Build Failed
+
+**Error**: CDK deploy fails building agent Docker image.
+
+**Check**:
+- Docker daemon is running: `docker ps`
+- Disk space available: `df -h`
+- Network access for pulling base images
+
+**Fix**:
+```bash
+# Test Docker locally
+docker build -t mini-debug-assist-agent -f Dockerfile .
+
+# If successful, try deploy again
+make deploy
+```
+
+## Project Structure
 
 ```
 mini-debug-assist/
-├── demo_app/              # FastAPI service with bugs
-│   ├── main.py           # App with 3 planted bugs
-│   └── config.py         # AppConfig integration
-├── agent/                 # LangGraph debugging agent
-│   ├── graph.py          # Pipeline definition
-│   ├── state.py          # State management
-│   ├── nodes/            # Individual pipeline nodes
-│   │   ├── context_collector.py
-│   │   ├── classify_rca.py
-│   │   ├── consolidator.py
-│   │   ├── fix.py
-│   │   ├── validate.py
-│   │   └── create_diff.py
-│   └── cli.py            # CLI entrypoint
-├── mcp_servers/           # MCP tool servers
+├── README.md
+├── LICENSE
+├── Makefile
+├── pyproject.toml
+├── requirements.txt
+├── .env.example
+│
+├── agent/                      # LangGraph agent harness
+│   ├── cli.py                  # CLI entry point
+│   ├── config.py               # Model IDs, turn caps
+│   ├── state.py                # AgentState dataclass
+│   ├── llm.py                  # Bedrock Converse API
+│   ├── mcp_client.py           # MCP JSON-RPC client
+│   ├── dedup.py                # DynamoDB deduplication
+│   ├── graph.py                # LangGraph orchestration
+│   └── nodes/                  # Agent nodes
+│       ├── context_collector.py
+│       ├── classify.py
+│       ├── fix.py
+│       ├── validate.py
+│       ├── create_diff.py
+│       ├── consolidator.py
+│       └── subagents/          # Parallel RCA subagents
+│
+├── mcp_servers/                # MCP servers (JSON-RPC over stdio)
 │   ├── cloudwatch_logs.py
 │   ├── xray_mcp.py
 │   ├── github_mcp.py
 │   └── appconfig_flags.py
-├── skills/                # Domain knowledge (markdown)
-│   ├── python-keyerror.md
-│   ├── perf-hot-loop.md
-│   └── feature-flag-rollback.md
-├── infra/                 # AWS CDK infrastructure
-│   ├── app.py
+│
+├── demo_app/                   # FastAPI app with planted bugs
+│   ├── main.py
+│   └── config.py
+│
+├── infra/                      # AWS CDK infrastructure
+│   ├── app.py                  # CDK app
+│   ├── requirements.txt
 │   └── stacks/
-│       ├── demo_app_stack.py
-│       ├── agent_stack.py
-│       └── observability_stack.py
-├── tests/                 # Test suite
-│   ├── test_demo_app.py
-│   └── fixtures/
-├── docs/                  # Documentation
-│   └── LEARNING_PATH.md  # Study guide
-├── pyproject.toml
-├── Makefile
-└── README.md
+│       ├── demo_app_stack.py   # Demo app (ECS + ALB)
+│       ├── agent_stack.py      # Agent (ECS task + IAM)
+│       └── observability_stack.py  # Logs + alarms + EventBridge
+│
+├── tests/                      # Test suite
+│   ├── fixtures/               # Mock issues and responses
+│   ├── test_agent_graph.py     # LangGraph routing
+│   ├── test_llm_tool_use.py    # Bedrock tool loops
+│   ├── test_validate_patch.py  # Patch application
+│   ├── test_create_diff_commit.py  # GitHub API
+│   ├── test_mcp_jsonrpc.py     # MCP protocol
+│   └── test_e2e_local.py       # End-to-end pipeline
+│
+├── scripts/                    # Deployment helpers
+│   ├── doctor.py               # Prerequisites check
+│   ├── setup_github_token.sh   # Store GitHub token
+│   ├── trigger_bug.py          # Trigger demo bug
+│   └── smoke.py                # Post-deploy validation
+│
+├── docs/                       # Documentation
+│   ├── LEARNING_PATH.md        # 16-step learning guide
+│   ├── learning-path.png       # Architecture diagram
+│   └── learning-path.html      # Editable diagram source
+│
+└── .github/
+    └── workflows/
+        └── ci.yml              # CI pipeline (lint + test + cdk synth)
 ```
 
-## 🔧 Deploy to AWS
+## Use Case
 
-### Synthesize CDK
+**Autonomous debugging**: A production service crashes with a KeyError or division-by-zero. CloudWatch detects high error rate and triggers an alarm. EventBridge routes the alarm to an ECS task running the agent. The agent:
 
-```bash
-make synth
+1. Collects context (logs, traces, code)
+2. Runs parallel RCA subagents (breadcrumbs, flag correlation, offending commit)
+3. Consolidates evidence and writes a root cause analysis
+4. Generates a fix using Claude Opus with bounded tool loops
+5. Validates the fix by applying it in a temp repo and running pytest
+6. Commits the fix to a branch via GitHub API and opens a PR
+7. Escalates to human if confidence is low or tests fail after retries
 
-# Or manually
-cd infra && cdk synth
-```
+**Real-world applications**:
+- Internal tools crash triage for platform teams
+- Automated incident response for known error patterns
+- Code quality automation (performance, reliability fixes)
+- Learning lab for agent patterns and AWS orchestration
 
-This generates CloudFormation templates without deploying.
+## CI
 
-### Deploy (Not Required for Learning)
+The CI workflow (`.github/workflows/ci.yml`) runs on every push and PR:
+- **Lint**: `ruff`, `black --check`, `mypy`
+- **Test**: `pytest` with coverage
+- **CDK Synth**: Validate infrastructure code
 
-```bash
-# Bootstrap CDK (first time only)
-cd infra && cdk bootstrap
+All checks must pass before merge.
 
-# Deploy stacks
-cdk deploy --all
+## Contributing
 
-# Requires:
-# - AWS account with appropriate permissions
-# - Bedrock model access in your region
-# - GitHub token stored in Secrets Manager
-```
+This is a learning demo. Fork it, customize it, and make it your own. Contributions welcome via issues and PRs.
 
-## 📊 Cost Notes
+Ideas for extensions:
+- Add more MCP servers (Slack, Jira, PagerDuty)
+- Implement mobile simulator validation
+- Build skill marketplace for fix strategies
+- Add multi-repository support
+- Integrate with LangSmith for full tracing
 
-**Mock mode**: $0 (no AWS services)
+## Author
 
-**Deployed mode** (rough monthly estimates):
-- ECS Fargate (demo app): ~$15-30
-- Bedrock (Claude): $3-15 per run (depends on turns)
-- CloudWatch Logs: ~$1-5
-- AppConfig: Free tier
-- NAT Gateway: ~$32 (most expensive!)
+**Saran Alla**  
+GitHub: [github.com/saranreddy](https://github.com/saranreddy)  
+Email: saranreddy2002@gmail.com
 
-**Cost optimization**:
-- Use mock mode for learning
-- Stop ECS tasks when not testing
-- Use 1 NAT gateway instead of 2
-- Set short log retention (1 week)
+## License
 
-## 🎓 Learning Path
+MIT License - see [LICENSE](LICENSE) for details.
 
-See [docs/LEARNING_PATH.md](docs/LEARNING_PATH.md) for a structured study guide broken into 5 phases:
-
-1. **Phase 1**: Demo app & bug patterns
-2. **Phase 2**: Context collector & deterministic processing
-3. **Phase 3**: RCA node & LLM integration
-4. **Phase 4**: Fix & validate loop
-5. **Phase 5**: MCP servers, skills, and infrastructure
-
-Each phase includes:
-- What to read
-- Key concepts
-- Exercises
-- Things to try
-
-## 🔍 How It Differs from Uber's System
-
-**Simplified for learning**:
-- 1 agent type vs. 8 at Uber
-- 3 bugs vs. ~50K issues/year at Uber
-- Mock mode for running without AWS
-- 4 MCP servers vs. 11 at Uber
-- ~3 skills vs. ~3,000 at Uber
-- Comments explain everything
-
-**Not implemented** (out of scope):
-- Parallel RCA subagents (~30 at Uber)
-- Emulator/simulator validation
-- Real-time event triggers from CloudWatch
-- Phabricator integration (uses GitHub)
-- Slack integration
-- Human-in-the-loop UI (debugassist.uberinternal.com)
-- Arize tracing (basic logging instead)
-- Multi-language support (Python only)
-
-## 🧪 Running End-to-End
-
-```bash
-# 1. Start demo app
-make run-demo
-
-# 2. Trigger the KeyError bug
-curl http://localhost:8000/user/3
-
-# 3. Run agent in mock mode
-make run-agent-mock
-
-# 4. Check output
-cat output/DEMO-001_result.yaml
-
-# 5. Review the generated fix
-# (In mock mode, fix is in output; in real mode, it creates a PR)
-```
-
-## 🤝 Contributing
-
-This is a learning project. Feel free to:
-- Add more bug types
-- Implement additional MCP servers
-- Add more skills
-- Improve the RCA logic
-- Add tests
-
-## 📚 References
-
-- **Uber Debug Assist Talk**: [YouTube](https://www.youtube.com/watch?v=iVCDIOf7vXw)
-- **LangGraph**: [Documentation](https://python.langchain.com/docs/langgraph)
-- **MCP (Model Context Protocol)**: [Specification](https://modelcontextprotocol.io/)
-- **AWS Bedrock**: [Documentation](https://docs.aws.amazon.com/bedrock/)
-- **Uber Engineering Blog**: [Flipr](https://www.uber.com/blog/flipr/), [Jaeger](https://www.uber.com/blog/distributed-tracing/)
-
-## 📄 License
-
-MIT (for learning purposes)
-
-## 🙏 Acknowledgments
-
-- Inspired by Uber's Debug Assist (Kriti Dangi et al.)
-- Architecture based on AGNTCon + MCPCon Japan 2026 presentation
-- Built for educational purposes to learn agentic AI patterns
+Copyright (c) 2026 Saran Alla
 
 ---
 
-**Next Steps**: Read [docs/LEARNING_PATH.md](docs/LEARNING_PATH.md) to start your learning journey!
+**Ready to deploy?** Start with `make doctor` to check prerequisites, then follow the [Quick Start](#quick-start) guide above.
+
+**Want to learn more?** See [`docs/LEARNING_PATH.md`](docs/LEARNING_PATH.md) for the full 16-step learning journey.
+
+**Current Version**: 0.1.0 (learning demo)  
+**Test Coverage**: 53 passing tests  
+**CI Status**: All checks passing  
+**AWS Deployment**: Production-ready with CDK

@@ -16,17 +16,42 @@ logger = logging.getLogger(__name__)
 
 # MCP server configurations
 MCP_SERVERS = {
-    "github": {
+    # Our own Python MCP servers (always available)
+    "cloudwatch_logs": {
+        "command": "python3",
+        "args": ["-m", "mcp_servers.cloudwatch_logs"],
+        "env": {
+            "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
+        },
+    },
+    "xray": {
+        "command": "python3",
+        "args": ["-m", "mcp_servers.xray_mcp"],
+        "env": {
+            "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
+        },
+    },
+    "github_mcp": {
+        "command": "python3",
+        "args": ["-m", "mcp_servers.github_mcp"],
+        "env": {
+            "GITHUB_TOKEN": os.getenv("GITHUB_TOKEN", ""),
+        },
+    },
+    "appconfig_flags": {
+        "command": "python3",
+        "args": ["-m", "mcp_servers.appconfig_flags"],
+        "env": {
+            "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
+        },
+    },
+    # Optional npm-based GitHub server (requires npx)
+    "github_npm": {
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-github"],
         "env": {
             "GITHUB_PERSONAL_ACCESS_TOKEN": os.getenv("GITHUB_TOKEN", ""),
         },
-    },
-    "filesystem": {
-        "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/workspace"],
-        "env": {},
     },
 }
 
@@ -107,7 +132,7 @@ class MCPClient:
     
     def _initialize_server(self, server_name: str) -> bool:
         """
-        Send initialize request to MCP server.
+        Send initialize request to MCP server and then the initialized notification.
         
         JSON-RPC request:
         {
@@ -120,6 +145,8 @@ class MCPClient:
             "clientInfo": {"name": "mini-debug-assist", "version": "0.1.0"}
           }
         }
+        
+        Then send notifications/initialized notification (no response expected).
         """
         try:
             request = {
@@ -141,6 +168,10 @@ class MCPClient:
             if response and "result" in response:
                 logger.info(f"Server {server_name} initialized: {response['result'].get('serverInfo', {})}")
                 self.servers[server_name]["initialized"] = True
+                
+                # Send notifications/initialized notification
+                self._send_notification(server_name, "notifications/initialized")
+                
                 return True
             else:
                 logger.error(f"Initialize failed for {server_name}: {response}")
@@ -149,6 +180,33 @@ class MCPClient:
         except Exception as e:
             logger.error(f"Error initializing server {server_name}: {e}", exc_info=True)
             return False
+    
+    def _send_notification(self, server_name: str, method: str, params: dict = None):
+        """
+        Send a JSON-RPC notification (no id, no response expected).
+        """
+        server_info = self.servers.get(server_name)
+        if not server_info:
+            return
+        
+        process = server_info["process"]
+        
+        try:
+            notification = {
+                "jsonrpc": "2.0",
+                "method": method,
+            }
+            
+            if params:
+                notification["params"] = params
+            
+            notification_line = json.dumps(notification) + "\n"
+            process.stdin.write(notification_line)
+            process.stdin.flush()
+            logger.debug(f"Sent notification to {server_name}: {method}")
+            
+        except Exception as e:
+            logger.error(f"Error sending notification to {server_name}: {e}")
     
     def _list_tools(self, server_name: str) -> bool:
         """
@@ -187,9 +245,10 @@ class MCPClient:
     
     def _send_request(self, server_name: str, request: dict, timeout: float = 10.0) -> Optional[dict]:
         """
-        Send JSON-RPC request and wait for response.
+        Send JSON-RPC request and wait for matching response by ID.
         
-        Writes request as JSON line to stdin, reads response from stdout.
+        Writes request as JSON line to stdin, reads responses from stdout.
+        Skips notifications (no "id") and log lines, matches by request ID.
         """
         server_info = self.servers.get(server_name)
         if not server_info:
@@ -197,6 +256,11 @@ class MCPClient:
             return None
         
         process = server_info["process"]
+        request_id = request.get("id")
+        
+        if request_id is None:
+            logger.error("Request must have an 'id' field")
+            return None
         
         try:
             # Send request
@@ -205,26 +269,49 @@ class MCPClient:
             process.stdin.flush()
             logger.debug(f"Sent request to {server_name}: {request}")
             
-            # Read response with timeout
+            # Read responses until we get a matching ID or timeout
             import select
+            import time
             
-            # Use select for timeout on stdout
-            ready, _, _ = select.select([process.stdout], [], [], timeout)
+            start_time = time.time()
             
-            if not ready:
-                logger.error(f"Timeout waiting for response from {server_name}")
-                return None
+            while time.time() - start_time < timeout:
+                # Check if data is available with 1 second timeout per read
+                remaining = timeout - (time.time() - start_time)
+                if remaining <= 0:
+                    break
+                
+                ready, _, _ = select.select([process.stdout], [], [], min(1.0, remaining))
+                
+                if not ready:
+                    continue
+                
+                response_line = process.stdout.readline()
+                
+                if not response_line:
+                    logger.warning(f"Empty line from {server_name}")
+                    continue
+                
+                try:
+                    response = json.loads(response_line)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Non-JSON line from {server_name}: {response_line[:100]}")
+                    continue
+                
+                # Skip notifications (no "id" field)
+                if "id" not in response:
+                    logger.debug(f"Skipping notification from {server_name}: {response.get('method', 'unknown')}")
+                    continue
+                
+                # Check if this response matches our request
+                if response["id"] == request_id:
+                    logger.debug(f"Received matching response from {server_name}: {response}")
+                    return response
+                else:
+                    logger.debug(f"Skipping response with different ID: {response['id']} != {request_id}")
             
-            response_line = process.stdout.readline()
-            
-            if not response_line:
-                logger.error(f"Empty response from {server_name}")
-                return None
-            
-            response = json.loads(response_line)
-            logger.debug(f"Received response from {server_name}: {response}")
-            
-            return response
+            logger.error(f"Timeout waiting for response from {server_name} (request ID: {request_id})")
+            return None
             
         except Exception as e:
             logger.error(f"Error sending request to {server_name}: {e}", exc_info=True)
@@ -240,15 +327,27 @@ class MCPClient:
         """
         Call a tool via MCP.
         
-        In real mode: Sends JSON-RPC tools/call request
-        In test/mock mode: Falls back to in-process mocks
+        In real mode: Sends JSON-RPC tools/call request, returns error if tool unknown
+        In mock mode (MCP_MOCK_MODE=true): Falls back to in-process mocks
         """
         logger.info(f"MCP tool call: {tool_name} with input: {tool_input}")
         
-        # Check if in mock mode or no servers started
-        if os.getenv("MCP_MOCK_MODE", "false").lower() == "true" or not self.servers:
-            logger.debug(f"Using mock implementation for {tool_name}")
+        # Check if in explicit mock mode
+        mock_mode = os.getenv("MCP_MOCK_MODE", "false").lower() == "true"
+        
+        if mock_mode:
+            logger.debug(f"MCP_MOCK_MODE=true, using mock implementation for {tool_name}")
             return self._call_tool_mock(tool_name, tool_input)
+        
+        # Real mode: never silently fall back to mocks
+        if not self.servers:
+            error_msg = f"No MCP servers started. Call start_server() first or set MCP_MOCK_MODE=true."
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "isError": True,
+            }
         
         # Find which server has this tool
         server_name = None
@@ -258,8 +357,13 @@ class MCPClient:
                 break
         
         if not server_name:
-            logger.warning(f"Tool {tool_name} not found in any server, using mock")
-            return self._call_tool_mock(tool_name, tool_input)
+            error_msg = f"Tool '{tool_name}' not found in any started server. Available tools: {self._list_available_tools()}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "isError": True,
+            }
         
         # Send tools/call request
         try:
@@ -422,6 +526,13 @@ class MCPClient:
             "pr_number": 123,
             "summary": f"Created PR: {title}",
         }
+    
+    def _list_available_tools(self) -> list[str]:
+        """List all available tool names across all servers."""
+        tools = []
+        for server_tools in self.tools_cache.values():
+            tools.extend([t["name"] for t in server_tools])
+        return tools
     
     def stop_all(self):
         """Stop all MCP servers."""

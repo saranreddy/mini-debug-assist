@@ -1,0 +1,7 @@
+# Mini Debug Assist - Main Dependencies
+#
+# Install with: pip install -r requirements.txt
+#
+
+# Install from pyproject.toml
+-e .
