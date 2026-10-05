@@ -375,7 +375,7 @@ Return your analysis in JSON format inside <result> tags:
         code_json = json.dumps(code_summary, indent=2)
     else:
         code_json = "No code context"
-    
+
     user_message = f"""Issue: {state.issue_data.get('exception_type', 'Unknown')}
 
 Logs: {json.dumps(state.logs[:10], indent=2) if state.logs else "No logs"}

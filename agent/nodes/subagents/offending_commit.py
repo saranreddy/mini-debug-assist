@@ -125,7 +125,7 @@ Return your analysis in JSON format inside <result> tags:
 Stack Trace: {issue_data.get('stack_trace', 'N/A')[:500]}
 
 Code Context:
-{json.dumps({k: v[:200] for k, v in code_context.items()}, indent=2) if code_context else "No code context"}
+{json.dumps({k: v[:200] for k, v in code_context.items()}, indent=2) if code_context else "No code"}
 
 Find which recent commit introduced this bug."""
 

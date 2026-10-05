@@ -19,6 +19,15 @@ from agent.state import AgentState, FixResult
 logger = logging.getLogger(__name__)
 
 
+def _format_code_context(code_context: dict[str, str] | None) -> str:
+    """Format code context for LLM prompt."""
+    import json
+    if not code_context:
+        return "No code context"
+    truncated = {k: v[:1000] + "..." for k, v in code_context.items()}
+    return json.dumps(truncated, indent=2)
+
+
 def fix_node(state: AgentState, config: AgentConfig) -> AgentState:
     """
     Generate fix for the issue.
@@ -160,10 +169,10 @@ Root Cause: {state.rca_result.root_cause if state.rca_result else 'Unknown'}
 Confidence: {state.rca_result.confidence if state.rca_result else 0}
 
 Code Context:
-{json.dumps({k: v[:1000] + "..." for k, v in state.code_context.items()}, indent=2) if state.code_context else "No code context"}
+{_format_code_context(state.code_context)}
 {previous_attempts_text}
 
-Generate a fix for this issue. {" **Learn from previous failures above.**" if state.fix_history else ""}"""
+Generate a fix for this issue.{" **Learn from previous failures above.**" if state.fix_history else ""}"""
 
     messages = [
         {
