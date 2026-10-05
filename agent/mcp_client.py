@@ -403,7 +403,7 @@ class MCPClient:
                     # Try to parse as JSON
                     try:
                         return json.loads(text_content)
-                    except:
+                    except (json.JSONDecodeError, ValueError):
                         return {"success": True, "result": text_content}
                 else:
                     return {"success": True, "result": "No content"}

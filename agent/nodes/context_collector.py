@@ -80,7 +80,7 @@ def _fetch_cloudwatch_logs(issue_data: dict[str, Any], config: AgentConfig) -> l
     if "timestamp" in issue_data:
         try:
             error_time = datetime.fromisoformat(issue_data["timestamp"].replace("Z", "+00:00"))
-        except:
+        except (ValueError, AttributeError):
             error_time = datetime.utcnow()
     else:
         error_time = datetime.utcnow()
@@ -166,7 +166,7 @@ def _fetch_xray_traces(issue_data: dict[str, Any], config: AgentConfig) -> list[
     if "timestamp" in issue_data:
         try:
             error_time = datetime.fromisoformat(issue_data["timestamp"].replace("Z", "+00:00"))
-        except:
+        except (ValueError, AttributeError):
             error_time = datetime.utcnow()
     else:
         error_time = datetime.utcnow()
@@ -227,7 +227,7 @@ def _fetch_xray_traces(issue_data: dict[str, Any], config: AgentConfig) -> list[
                     if status >= 400:
                         has_error = True
                         break
-                except:
+                except (json.JSONDecodeError, KeyError, TypeError):
                     pass
 
             simplified_traces.append(

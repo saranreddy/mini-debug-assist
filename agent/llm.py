@@ -226,7 +226,7 @@ def _extract_json_from_text(text: str) -> dict[str, Any] | None:
     # Try direct JSON parse
     try:
         return json.loads(text.strip())
-    except:
+    except (json.JSONDecodeError, ValueError):
         pass
 
     # Try to find JSON in XML tags
@@ -234,7 +234,7 @@ def _extract_json_from_text(text: str) -> dict[str, Any] | None:
     if xml_match:
         try:
             return json.loads(xml_match.group(1).strip())
-        except:
+        except (json.JSONDecodeError, ValueError):
             pass
 
     # Try to find JSON in code blocks
@@ -242,7 +242,7 @@ def _extract_json_from_text(text: str) -> dict[str, Any] | None:
     if code_block_match:
         try:
             return json.loads(code_block_match.group(1).strip())
-        except:
+        except (json.JSONDecodeError, ValueError):
             pass
 
     return None
@@ -318,8 +318,8 @@ def parse_rca_result(
         try:
             retry_output = retry_fn()
             return parse_rca_result(retry_output, retry_fn=None)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Retry failed: {e}")
 
     # Fallback: low confidence result
     logger.warning("Falling back to low-confidence RCA result")

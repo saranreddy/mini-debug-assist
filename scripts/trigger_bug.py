@@ -98,7 +98,7 @@ def get_agent_task_arn():
         tasks = json.loads(result.stdout).get("taskArns", [])
         return tasks[0] if tasks else None
 
-    except:
+    except (subprocess.SubprocessError, json.JSONDecodeError, KeyError):
         return None
 
 
