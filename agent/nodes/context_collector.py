@@ -271,7 +271,7 @@ def _fetch_code_context(issue_data: dict[str, Any], config: AgentConfig) -> dict
 
         # Determine which files to fetch based on error data
         endpoint = issue_data.get("endpoint", "")
-        error_type = issue_data.get("error_type", "")
+        issue_data.get("error_type", "")
 
         # Map endpoint to likely file
         files_to_fetch = []
@@ -385,18 +385,18 @@ def _get_mock_code_context() -> str:
 @app.get("/user/{user_id}")
 async def get_user(user_id: str):
     logger.info(f"Fetching user {user_id}")
-    
+
     if user_id not in USERS_DB:
         logger.warning(f"User {user_id} not found")
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     user = USERS_DB[user_id]
-    
+
     # BUG: This assumes 'email' always exists
     email = user["email"]  # KeyError when user_id='3'
-    
+
     logger.info(f"User {user_id} retrieved successfully")
-    
+
     return {
         "id": user["id"],
         "name": user["name"],

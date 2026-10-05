@@ -300,9 +300,8 @@ class MCPClient:
 
                 # Skip notifications (no "id" field)
                 if "id" not in response:
-                    logger.debug(
-                        f"Skipping notification from {server_name}: {response.get('method', 'unknown')}"
-                    )
+                    method = response.get('method', 'unknown')
+                    logger.debug(f"Skipping notification from {server_name}: {method}")
                     continue
 
                 # Check if this response matches our request
@@ -365,7 +364,11 @@ class MCPClient:
                 break
 
         if not server_name:
-            error_msg = f"Tool '{tool_name}' not found in any started server. Available tools: {self._list_available_tools()}"
+            available = self._list_available_tools()
+            error_msg = (
+                f"Tool '{tool_name}' not found in any started server. "
+                f"Available tools: {available}"
+            )
             logger.error(error_msg)
             return {
                 "success": False,

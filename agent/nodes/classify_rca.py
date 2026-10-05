@@ -43,14 +43,16 @@ def classify_rca_node(state: AgentState, config: AgentConfig) -> AgentState:
         state.rca_result = _mock_rca_result(state)
         state.turn_count["classify_rca"] = 1
         logger.info(
-            f"Initial RCA (mock): {state.rca_result.category}, confidence {state.rca_result.confidence}"
+            f"Initial RCA (mock): {state.rca_result.category}, "
+            f"confidence {state.rca_result.confidence}"
         )
     else:
         rca_result, turns = _perform_rca_with_llm(state, config)
         state.rca_result = rca_result
         state.turn_count["classify_rca"] = turns
         logger.info(
-            f"Initial RCA: {state.rca_result.category}, confidence {state.rca_result.confidence}, turns={turns}"
+            f"Initial RCA: {state.rca_result.category}, "
+            f"confidence {state.rca_result.confidence}, turns={turns}"
         )
 
     logger.info("RCA complete, will fan out to subagents next")
@@ -147,9 +149,20 @@ Once you've gathered enough context, return your analysis in JSON format inside 
 </result>"""
 
     # Build initial message with context
+    exc_type = state.issue_data.get('exception_type', 'Unknown')
+    exc_msg = state.issue_data.get('exception_message', '')
+
+    # Truncate code context for readability
+    code_ctx = state.code_context
+    if code_ctx:
+        code_summary = {k: v[:500] + "..." for k, v in code_ctx.items()}
+        code_json = json.dumps(code_summary, indent=2)
+    else:
+        code_json = "No code context"
+
     user_message = f"""Issue: {state.issue_title}
 
-Exception: {state.issue_data.get('exception_type', 'Unknown')} - {state.issue_data.get('exception_message', '')}
+Exception: {exc_type} - {exc_msg}
 
 Stack Trace:
 {state.issue_data.get('stack_trace', 'N/A')}
@@ -161,7 +174,7 @@ Traces (failed requests):
 {json.dumps(state.traces[:5], indent=2) if state.traces else "No traces available"}
 
 Code context:
-{json.dumps({k: v[:500] + "..." for k, v in state.code_context.items()}, indent=2) if state.code_context else "No code context"}
+{code_json}
 
 Analyze this error and determine the root cause."""
 

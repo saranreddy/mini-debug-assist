@@ -45,7 +45,8 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": (
                             "Logs Insights query string. "
-                            "Example: 'fields @timestamp, @message | filter level = \"ERROR\" | limit 100'"
+                            'Example: \'fields @timestamp, @message | '
+                            'filter level = "ERROR" | limit 100\''
                         ),
                     },
                     "start_time": {

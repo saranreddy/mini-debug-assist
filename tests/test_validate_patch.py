@@ -32,13 +32,13 @@ class TestValidatePatchApplication:
 +++ demo_app/main.py
 @@ -130,7 +130,7 @@
      user = USERS_DB[user_id]
-     
+
      # BUG: This assumes 'email' always exists
 -    email = user["email"]  # KeyError when user_id='3'
 +    email = user.get("email")  # Fixed: use .get() for optional field
-     
+
      logger.info(f"User {user_id} retrieved successfully")
-     
+
 """,
                 }
             ],

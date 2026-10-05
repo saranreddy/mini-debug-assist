@@ -150,15 +150,15 @@ class TestSymptomHiding:
                     "diff": """--- a/demo_app/main.py
 +++ b/demo_app/main.py
 @@ -150,7 +150,10 @@ async def get_user(user_id: str):
-     
+
      user = USERS_DB[user_id]
-     
+
 -    email = user["email"]
 +    try:
 +        email = user["email"]
 +    except:
 +        pass
-     
+
      logger.info(f"User retrieved")
 """,
                 }
@@ -195,16 +195,16 @@ class TestSymptomHiding:
                     "diff": """--- a/demo_app/main.py
 +++ b/demo_app/main.py
 @@ -150,7 +150,12 @@ async def get_user(user_id: str):
-     
+
      user = USERS_DB[user_id]
-     
+
 -    email = user["email"]
 +    try:
 +        email = user["email"]
 +    except KeyError:
 +        logger.warning(f"User {user_id} has no email field")
 +        email = None
-     
+
      logger.info(f"User retrieved")
 """,
                 }
@@ -237,10 +237,10 @@ class TestSymptomHiding:
                     "diff": """--- a/demo_app/main.py
 +++ b/demo_app/main.py
 @@ -150,6 +150,8 @@ async def get_user(user_id: str):
-     
+
      if user_id not in USERS_DB:
 +        pass
-+        
++
      user = USERS_DB[user_id]
 """,
                 }

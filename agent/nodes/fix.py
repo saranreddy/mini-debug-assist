@@ -75,15 +75,15 @@ def _mock_fix_result(state: AgentState) -> FixResult:
                     "diff": """--- a/demo_app/main.py
 +++ b/demo_app/main.py
 @@ -153,7 +153,10 @@ async def get_user(user_id: str):
-     
+
      user = USERS_DB[user_id]
-     
+
 -    # BUG: This assumes 'email' always exists
 -    email = user["email"]  # KeyError when user_id='3'
 +    # Fixed: Use .get() with default value to handle missing email field
 +    # This prevents KeyError when user data is incomplete
 +    email = user.get("email", None)
-     
+
      logger.info(f"User {user_id} retrieved successfully")
 """,
                 }

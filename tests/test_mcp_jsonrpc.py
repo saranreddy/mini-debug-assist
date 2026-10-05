@@ -64,13 +64,13 @@ while True:
     line = sys.stdin.readline()
     if not line:
         break
-    
+
     req = json.loads(line)
-    
+
     if req["method"] == "tools/call":
         tool_name = req["params"]["name"]
         tool_args = req["params"]["arguments"]
-        
+
         # Send tool response
         resp = {
             "jsonrpc": "2.0",

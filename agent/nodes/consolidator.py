@@ -355,7 +355,7 @@ Other subagents have proposed:
 
 Primary RCA: {state.rca_result.root_cause if state.rca_result else 'Unknown'}
 
-Your first analysis had low confidence or disagreed. 
+Your first analysis had low confidence or disagreed.
 Re-analyze with this additional context.
 
 Return your analysis in JSON format inside <result> tags:
@@ -368,11 +368,19 @@ Return your analysis in JSON format inside <result> tags:
 }}
 </result>"""
 
+    # Prepare code context summary
+    code_ctx = state.code_context
+    if code_ctx:
+        code_summary = {k: v[:200] for k, v in code_ctx.items()}
+        code_json = json.dumps(code_summary, indent=2)
+    else:
+        code_json = "No code context"
+    
     user_message = f"""Issue: {state.issue_data.get('exception_type', 'Unknown')}
 
 Logs: {json.dumps(state.logs[:10], indent=2) if state.logs else "No logs"}
 
-Code Context: {json.dumps({k: v[:200] for k, v in state.code_context.items()}, indent=2) if state.code_context else "No code context"}
+Code Context: {code_json}
 
 Re-analyze with the context from other subagents."""
 
