@@ -23,7 +23,8 @@ from stacks.observability_stack import ObservabilityStack
 
 app = cdk.App()
 
-# Environment - for synth without credentials, stacks are env-agnostic
+# Environment configuration
+# For synth without credentials, stacks are env-agnostic
 # When deploying, CDK will use CDK_DEFAULT_ACCOUNT and CDK_DEFAULT_REGION
 import os
 
