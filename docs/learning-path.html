@@ -1,0 +1,102 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}body{margin:0;background:#fff;font-family:"DejaVu Sans",Arial,sans-serif;color:#1d1d1f}
+.page{width:1600px;padding:28px 32px}
+h1{font-size:30px;margin:0 0 4px}.sub{color:#555;font-size:16px;margin-bottom:18px}
+.row{display:flex;gap:18px;align-items:stretch}
+.lane{border:2px solid;border-radius:14px;padding:14px 14px 16px;position:relative}
+.lane h2{font-size:17px;margin:0 0 12px;letter-spacing:.2px}
+.aws{border-color:#FF9900;background:#FFF8EE}.agent{border-color:#3B6FD8;background:#F3F7FF}
+.tools{border-color:#2E9B55;background:#F1FAF4}.ops{border-color:#888;background:#F7F7F7}
+.card{background:#fff;border:1.5px solid #ccc;border-radius:10px;padding:10px 12px;font-size:14px;line-height:1.38;position:relative}
+.card b.t{display:block;font-size:16px;margin-bottom:3px}
+.n{display:inline-block;min-width:28px;height:28px;border-radius:14px;color:#fff;font-weight:700;text-align:center;line-height:28px;margin-right:8px;font-size:15px}
+.aws .n{background:#E68A00}.agent .n{background:#3B6FD8}.llm .n{background:#7B4FD0}.tools .n{background:#2E9B55}.ops .n{background:#666}.human .n{background:#D04545}
+.card.llm{border-color:#B79CEB;background:#FBF8FF}.card.human{border-color:#E9A0A0;background:#FFF5F5}
+code{font-family:"DejaVu Sans Mono",monospace;font-size:12.5px;background:#eef0f4;padding:1px 4px;border-radius:4px}
+.down{text-align:center;color:#666;font-size:20px;line-height:20px;margin:4px 0}
+.downl{text-align:center;color:#666;font-size:12.5px;margin:2px 0}
+.col{display:flex;flex-direction:column}
+.big{font-size:44px;color:#555;align-self:center;padding:0 2px}
+.loop{border:2px dashed #D04545;border-radius:10px;padding:8px;background:#fffafa}
+.loop .lbl{font-size:12.5px;color:#B03030;font-weight:700;margin-bottom:6px}
+.fan{display:flex;gap:6px;margin-top:6px}.fan span{flex:1;background:#F0E8FF;border:1px solid #B79CEB;border-radius:6px;font-size:12px;text-align:center;padding:4px 2px}
+.legend{display:flex;gap:18px;font-size:13px;margin-top:16px;color:#444;flex-wrap:wrap}
+.sw{display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:-2px;margin-right:5px;border:1.5px solid}
+.status{font-size:12px;color:#8a5a00;margin-top:4px}
+</style></head><body><div class="page">
+<h1>Mini Debug Assist: the 16 learning steps</h1>
+<div class="sub">From a production error to a reviewed pull request. Repo: <code>saranreddy/mini-debug-assist</code>. Modelled on Uber's Debug Assist.</div>
+
+<div class="card" style="margin-bottom:14px;border-color:#888"><span class="n" style="background:#666">1</span><b>Big picture.</b> An app crashes, AWS notices, the agent wakes up, investigates in parallel, writes a fix, proves it with tests, and opens a PR. A human merges it.</div>
+
+<div class="row">
+ <!-- Lane A -->
+ <div class="lane aws col" style="width:300px">
+  <h2>Steps 2–5 · Signal and wake-up (AWS)</h2>
+  <div class="card"><b class="t"><span class="n">2</span>Demo app bug</b><code>demo_app/</code> FastAPI.<br><code>GET /user/3</code> raises <b>KeyError</b> → HTTP 500.</div>
+  <div class="down">↓</div>
+  <div class="card"><b class="t"><span class="n">3</span>Structured JSON logs</b>Each error logged as JSON: <code>level</code>, <code>error_type</code>, <code>trace_id</code>.</div>
+  <div class="down">↓</div>
+  <div class="card"><b class="t"><span class="n">4</span>CloudWatch Logs</b>ECS Fargate ships logs. A <b>metric filter</b> counts ERROR lines.</div>
+  <div class="down">↓</div>
+  <div class="card"><b class="t"><span class="n">5</span>Alarm → EventBridge → agent</b><code>HighErrorRateAlarm</code> (10 errors / 5 min) → <code>AgentTriggerRule</code> → starts agent ECS task.<br><b>DynamoDB dedup</b>: one investigation per issue.</div>
+ </div>
+ <div class="big">→</div>
+
+ <!-- Lane G -->
+ <div class="lane agent col" style="width:560px">
+  <h2>Steps 6–11 · The agent harness (LangGraph, <code>agent/graph.py</code>)</h2>
+  <div class="card"><b class="t"><span class="n">6</span>context_collector</b><code>cli.main</code> → <code>run_debug_agent</code> → <code>graph.compile()</code> → <code>app.invoke(AgentState)</code>.<br>Plain Python: gathers logs, traces, code. No LLM.</div>
+  <div class="down">↓</div>
+  <div class="card llm"><b class="t"><span class="n">7</span>classify_rca</b>Sonnet 5.5 with a bounded tool loop (<code>llm.py</code>). Outputs structured <code>RCAResult</code>: category, root cause, confidence.</div>
+  <div class="down">↓</div>
+  <div class="card llm"><b class="t"><span class="n">8</span>Parallel RCA subagents → consolidator</b>LangGraph <code>Send</code> fan-out, 5 turns each, results merged by a reducer:
+   <div class="fan"><span>breadcrumbs</span><span>flag_correlation</span><span>offending_commit</span></div>
+   <div style="margin-top:6px">Consolidator: confidence ≥ 0.7 and agreement ≥ 0.67 → continue. Otherwise retry the weakest subagent, then escalate.</div></div>
+  <div class="down">↓</div>
+  <div class="loop"><div class="lbl">↻ Evaluator-optimizer loop · max 3 attempts · failed test output fed back</div>
+   <div class="card llm"><b class="t"><span class="n">9</span>fix</b>Opus 5.5, max 50 turns. Outputs <code>FixResult</code>: unified diff, optional mitigation (<code>requires_approval</code>). Retries read <code>fix_history</code>.</div>
+   <div class="down">↓ ↑</div>
+   <div class="card"><b class="t"><span class="n">10</span>validate</b>Copy repo to temp dir → <code>git apply</code> → <code>pytest</code>. Reject symptom-hiding patches (swallowed exceptions). A regression test must go red → green.</div>
+  </div>
+  <div class="downl">passed ↓</div>
+  <div class="card"><b class="t"><span class="n">11</span>create_diff</b>Create branch → commit patched files → open PR.<br>Body: Problem · Root Cause · Fix · Mitigation · Test Plan.</div>
+ </div>
+ <div class="big">→</div>
+
+ <!-- Right column -->
+ <div class="col" style="width:600px;gap:18px">
+  <div class="lane ops col">
+   <h2>Human gate</h2>
+   <div class="row" style="gap:10px">
+    <div class="card human" style="flex:1"><b class="t"><span class="n">✓</span>Reviewer merges PR</b>The agent never merges or pushes to main.</div>
+    <div class="card human" style="flex:1"><b class="t"><span class="n">!</span>Escalate to on-call</b>Low confidence, disagreement, or 3 failed fixes.</div>
+   </div>
+  </div>
+  <div class="lane tools col">
+   <h2>Steps 12–14 · Tools and knowledge (used by steps 7, 8, 9)</h2>
+   <div class="card"><b class="t"><span class="n">12</span>MCP client</b><code>agent/mcp_client.py</code>: starts servers as subprocesses, JSON-RPC over stdio: <code>initialize</code> → <code>tools/list</code> → <code>tools/call</code>.</div>
+   <div class="down">↓</div>
+   <div class="card"><b class="t"><span class="n">13</span>MCP servers</b><code>mcp_servers/</code>: <code>cloudwatch_logs</code> · <code>xray_mcp</code> · <code>github_mcp</code> · <code>appconfig_flags</code>. Each tool = name + description + JSON input schema.</div>
+   <div class="down">↓</div>
+   <div class="card"><b class="t"><span class="n">14</span>Skills by agent_type</b><code>skills/</code>: playbooks loaded into prompts based on <code>agent_type</code> (e.g. <code>python-web</code>).</div>
+  </div>
+  <div class="lane ops col">
+   <h2>Steps 15–16 · Run it and improve it</h2>
+   <div class="row" style="gap:10px">
+    <div class="card" style="flex:1"><b class="t"><span class="n">15</span>Observability</b>Trace every node, tool call and token. Human review outcomes feed back to improve prompts.</div>
+    <div class="card" style="flex:1"><b class="t"><span class="n">16</span>CDK infra and deploy</b><code>infra/stacks/</code>: <code>demo_app_stack</code> · <code>agent_stack</code> · <code>observability_stack</code>. Provisions everything in steps 2–11.</div>
+   </div>
+  </div>
+ </div>
+</div>
+
+<div class="legend">
+ <span><i class="sw" style="background:#FFF8EE;border-color:#FF9900"></i>AWS infrastructure</span>
+ <span><i class="sw" style="background:#F3F7FF;border-color:#3B6FD8"></i>Plain Python node</span>
+ <span><i class="sw" style="background:#FBF8FF;border-color:#B79CEB"></i>LLM node (Claude on Bedrock)</span>
+ <span><i class="sw" style="background:#F1FAF4;border-color:#2E9B55"></i>Tools (MCP) and skills</span>
+ <span><i class="sw" style="background:#FFF5F5;border-color:#E9A0A0"></i>Human in the loop</span>
+ <span>Steps 1–12 taught · 13–16 coming next</span>
+</div>
+</div></body></html>
