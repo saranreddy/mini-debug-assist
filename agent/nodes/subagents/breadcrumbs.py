@@ -21,32 +21,32 @@ MAX_TURNS = 5
 def breadcrumbs_subagent(state_dict: dict[str, Any], config: AgentConfig) -> dict[str, Any]:
     """
     Analyze breadcrumbs and log timeline.
-    
+
     In mock mode: analyzes fixture breadcrumbs
     In real mode: would use Claude to analyze log sequence
-    
+
     Returns:
         Updated state dict with subagent result
     """
     logger.info("Running breadcrumbs subagent")
-    
+
     issue_data = state_dict["issue_data"]
     logs = state_dict.get("logs", [])
-    
+
     if config.mode == "mock":
         result = _mock_breadcrumb_analysis(issue_data, logs)
         turns = 1
     else:
         result, turns = _analyze_breadcrumbs_with_llm(issue_data, logs, config)
-    
+
     # Add result to subagent_results
     subagent_results = state_dict.get("subagent_results", {})
     subagent_results["breadcrumbs"] = result
-    
+
     # Track turns
     turn_count = state_dict.get("turn_count", {})
     turn_count["subagent_breadcrumbs"] = turns
-    
+
     return {
         "subagent_results": subagent_results,
         "turn_count": turn_count,
@@ -56,12 +56,12 @@ def breadcrumbs_subagent(state_dict: dict[str, Any], config: AgentConfig) -> dic
 def _mock_breadcrumb_analysis(issue_data: dict, logs: list) -> SubagentResult:
     """
     Mock breadcrumb analysis.
-    
+
     Examines the sequence of events leading to the crash.
     """
     breadcrumbs = issue_data.get("breadcrumbs", [])
     exception_type = issue_data.get("exception_type", "")
-    
+
     # Analyze pattern
     if exception_type == "KeyError":
         # Successful requests followed by crash
@@ -80,7 +80,7 @@ def _mock_breadcrumb_analysis(issue_data: dict, logs: list) -> SubagentResult:
         hypothesis = f"Log timeline shows {exception_type} occurred after normal operations"
         confidence = 0.6
         evidence = [f"Breadcrumbs: {len(breadcrumbs)} events logged"]
-    
+
     return SubagentResult(
         subagent_type="breadcrumbs",
         hypothesis=hypothesis,
@@ -89,18 +89,16 @@ def _mock_breadcrumb_analysis(issue_data: dict, logs: list) -> SubagentResult:
         supporting_data={
             "breadcrumbs_analyzed": len(breadcrumbs),
             "logs_analyzed": len(logs),
-        }
+        },
     )
 
 
 def _analyze_breadcrumbs_with_llm(
-    issue_data: dict,
-    logs: list,
-    config: AgentConfig
+    issue_data: dict, logs: list, config: AgentConfig
 ) -> SubagentResult:
     """
     Analyze breadcrumbs using LLM.
-    
+
     Would use Claude with turn cap to analyze the event sequence.
     """
     # In production, would call Bedrock with turn limit

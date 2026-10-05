@@ -22,8 +22,7 @@ import boto3
 from botocore.exceptions import ClientError
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
-
+from mcp.types import TextContent, Tool
 
 # Initialize MCP server
 app = Server("appconfig-flags-mcp")
@@ -131,37 +130,35 @@ async def _get_flag(args: dict) -> list[TextContent]:
     flag_name = args["flag_name"]
     application = args["application"]
     environment = args.get("environment", "dev")
-    
+
     try:
         client = boto3.client("appconfigdata")
-        
+
         # Start configuration session
         session_response = client.start_configuration_session(
             ApplicationIdentifier=application,
             EnvironmentIdentifier=environment,
             ConfigurationProfileIdentifier="feature-flags",
         )
-        
+
         token = session_response["InitialConfigurationToken"]
-        
+
         # Get latest configuration
-        config_response = client.get_latest_configuration(
-            ConfigurationToken=token
-        )
-        
+        config_response = client.get_latest_configuration(ConfigurationToken=token)
+
         # Parse configuration
         config_data = json.loads(config_response["Configuration"].read())
-        
+
         # Get flag value
         flag_value = config_data.get(flag_name, "NOT_FOUND")
-        
+
         return [
             TextContent(
                 type="text",
                 text=f"Flag '{flag_name}' = '{flag_value}'",
             )
         ]
-        
+
     except ClientError as e:
         if e.response["Error"]["Code"] == "ResourceNotFoundException":
             return [
@@ -189,37 +186,35 @@ async def _list_flags(args: dict) -> list[TextContent]:
     """List all feature flags."""
     application = args["application"]
     environment = args.get("environment", "dev")
-    
+
     try:
         client = boto3.client("appconfigdata")
-        
+
         # Start configuration session
         session_response = client.start_configuration_session(
             ApplicationIdentifier=application,
             EnvironmentIdentifier=environment,
             ConfigurationProfileIdentifier="feature-flags",
         )
-        
+
         token = session_response["InitialConfigurationToken"]
-        
+
         # Get latest configuration
-        config_response = client.get_latest_configuration(
-            ConfigurationToken=token
-        )
-        
+        config_response = client.get_latest_configuration(ConfigurationToken=token)
+
         # Parse configuration
         config_data = json.loads(config_response["Configuration"].read())
-        
+
         # Format flags
         formatted = json.dumps(config_data, indent=2)
-        
+
         return [
             TextContent(
                 type="text",
                 text=f"Feature flags in {application}/{environment}:\n\n{formatted}",
             )
         ]
-        
+
     except Exception as e:
         return [
             TextContent(
@@ -232,17 +227,17 @@ async def _list_flags(args: dict) -> list[TextContent]:
 async def _update_flag(args: dict) -> list[TextContent]:
     """
     Update a feature flag (with human approval check).
-    
+
     Uber's approach: Feature flag rollbacks require correlation and approval.
     In production, this would trigger a human approval workflow.
     """
     flag_name = args["flag_name"]
     new_value = args["new_value"]
     reason = args["reason"]
-    
+
     # Check if human approval is bypassed (for testing)
     bypass_approval = os.getenv("BYPASS_FLAG_APPROVAL", "false").lower() == "true"
-    
+
     if not bypass_approval:
         return [
             TextContent(
@@ -258,7 +253,7 @@ async def _update_flag(args: dict) -> list[TextContent]:
                 ),
             )
         ]
-    
+
     # In production, this would update AppConfig
     # For learning purposes, we just simulate approval
     return [

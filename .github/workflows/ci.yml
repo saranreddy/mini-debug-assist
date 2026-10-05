@@ -69,7 +69,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
       
       - name: Install CDK
         run: npm install -g aws-cdk
@@ -80,8 +80,12 @@ jobs:
           pip install -r requirements.txt
           pip install -r infra/requirements.txt
       
-      - name: CDK Synth
+      - name: CDK Synth (without AWS credentials)
         run: cd infra && cdk synth
         env:
           CDK_DEFAULT_ACCOUNT: "123456789012"
           CDK_DEFAULT_REGION: "us-east-1"
+          # Explicitly unset AWS credentials to ensure synth works without them
+          AWS_ACCESS_KEY_ID: ""
+          AWS_SECRET_ACCESS_KEY: ""
+          AWS_SESSION_TOKEN: ""

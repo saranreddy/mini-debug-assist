@@ -13,15 +13,20 @@ Maps to Uber's monitoring with Arize tracing and alerting.
 from aws_cdk import (
     Duration,
     Stack,
+)
+from aws_cdk import (
     aws_cloudwatch as cloudwatch,
+)
+from aws_cdk import (
     aws_cloudwatch_actions as cw_actions,
+)
+from aws_cdk import (
     aws_sns as sns,
-    aws_sns_subscriptions as subscriptions,
 )
 from constructs import Construct
 
-from .demo_app_stack import DemoAppStack
 from .agent_stack import AgentStack
+from .demo_app_stack import DemoAppStack
 
 
 class ObservabilityStack(Stack):
@@ -33,7 +38,7 @@ class ObservabilityStack(Stack):
         construct_id: str,
         demo_app_stack: DemoAppStack,
         agent_stack: AgentStack,
-        **kwargs
+        **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
@@ -51,7 +56,7 @@ class ObservabilityStack(Stack):
         # )
 
         # ===== CloudWatch Alarms =====
-        
+
         # High error rate alarm using custom metric from logs
         error_metric = cloudwatch.Metric(
             namespace=demo_app_stack.metric_namespace,
@@ -73,9 +78,7 @@ class ObservabilityStack(Stack):
         )
 
         # Send alarm to SNS
-        self.error_alarm.add_alarm_action(
-            cw_actions.SnsAction(self.alert_topic)
-        )
+        self.error_alarm.add_alarm_action(cw_actions.SnsAction(self.alert_topic))
 
         # ===== CloudWatch Dashboard =====
         self.dashboard = cloudwatch.Dashboard(
@@ -138,7 +141,7 @@ class ObservabilityStack(Stack):
                 log_group_names=[demo_app_stack.log_group.log_group_name],
                 query_lines=[
                     "fields @timestamp, @message",
-                    "filter level = \"ERROR\"",
+                    'filter level = "ERROR"',
                     "sort @timestamp desc",
                     "limit 20",
                 ],

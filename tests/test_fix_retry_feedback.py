@@ -4,18 +4,16 @@ Tests for fix retry feedback loop.
 Validates that fix node includes previous attempt failures in prompts.
 """
 
-from unittest.mock import Mock, patch
-
-import pytest
+from unittest.mock import patch
 
 from agent.config import AgentConfig
 from agent.nodes.fix import _generate_fix_with_llm
-from agent.state import AgentState, RCAResult, FixResult
+from agent.state import AgentState, RCAResult
 
 
 class TestFixRetryFeedback:
     """Test fix retry feedback with validation history."""
-    
+
     @patch("agent.llm.invoke_with_tools")
     def test_first_attempt_no_history(self, mock_invoke):
         """Test that first attempt has no previous history in prompt."""
@@ -24,9 +22,9 @@ class TestFixRetryFeedback:
             {
                 "text": '{"fix_applied": true, "changes": [{"file": "test.py", "diff": "mock diff"}]}'
             },
-            5
+            5,
         )
-        
+
         # State with no fix history
         state = AgentState(
             issue_id="TEST-001",
@@ -45,23 +43,23 @@ class TestFixRetryFeedback:
             ),
             fix_history=[],  # Empty - first attempt
         )
-        
+
         config = AgentConfig(mode="aws")
-        
+
         result, turns = _generate_fix_with_llm(state, config)
-        
+
         # Check that prompt was called
         assert mock_invoke.called
-        
+
         # Get the user message passed to LLM
         call_args = mock_invoke.call_args
         messages = call_args[1]["messages"]
         user_message = messages[0]["content"][0]["text"]
-        
+
         # First attempt should NOT have "PREVIOUS FIX ATTEMPTS"
         assert "PREVIOUS FIX ATTEMPTS" not in user_message
         assert "FAILED" not in user_message
-    
+
     @patch("agent.llm.invoke_with_tools")
     def test_second_attempt_includes_failure(self, mock_invoke):
         """Test that second attempt includes first attempt's failure in prompt."""
@@ -70,9 +68,9 @@ class TestFixRetryFeedback:
             {
                 "text": '{"fix_applied": true, "changes": [{"file": "test.py", "diff": "mock diff 2"}]}'
             },
-            5
+            5,
         )
-        
+
         # State with fix history (first attempt failed)
         state = AgentState(
             issue_id="TEST-002",
@@ -99,36 +97,36 @@ class TestFixRetryFeedback:
                 }
             ],
         )
-        
+
         config = AgentConfig(mode="aws")
-        
+
         result, turns = _generate_fix_with_llm(state, config)
-        
+
         # Check that prompt was called
         assert mock_invoke.called
-        
+
         # Get the user message passed to LLM
         call_args = mock_invoke.call_args
         messages = call_args[1]["messages"]
         user_message = messages[0]["content"][0]["text"]
-        
+
         # Second attempt MUST include previous failure
         assert "PREVIOUS FIX ATTEMPTS" in user_message
         assert "FAILED" in user_message
         assert "Attempt 1" in user_message
-        
+
         # Should include the diff from attempt 1
         assert "old line" in user_message or "new line" in user_message
-        
+
         # Should include the test output
         assert "test_function" in user_message or "AssertionError" in user_message
-        
+
         # Should include failure reason
         assert "Tests failed" in user_message
-        
+
         # Should have learning prompt
         assert "Learn from previous failures" in user_message
-    
+
     @patch("agent.llm.invoke_with_tools")
     def test_third_attempt_includes_two_failures(self, mock_invoke):
         """Test that third attempt includes both previous failures."""
@@ -137,9 +135,9 @@ class TestFixRetryFeedback:
             {
                 "text": '{"fix_applied": true, "changes": [{"file": "test.py", "diff": "mock diff 3"}]}'
             },
-            5
+            5,
         )
-        
+
         # State with two previous failed attempts
         state = AgentState(
             issue_id="TEST-003",
@@ -173,23 +171,23 @@ class TestFixRetryFeedback:
                 },
             ],
         )
-        
+
         config = AgentConfig(mode="aws")
-        
+
         result, turns = _generate_fix_with_llm(state, config)
-        
+
         # Get the user message
         call_args = mock_invoke.call_args
         messages = call_args[1]["messages"]
         user_message = messages[0]["content"][0]["text"]
-        
+
         # Should include both attempts
         assert "Attempt 1" in user_message
         assert "Attempt 2" in user_message
-        
+
         # Should include both failure reasons
         assert "first failure output" in user_message
         assert "second failure output" in user_message
-        
+
         # Should include symptom hiding reason
         assert "Symptom hiding" in user_message or "broad except" in user_message

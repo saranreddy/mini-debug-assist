@@ -11,7 +11,6 @@ Uber uses Claude Sonnet with structured XML output and fans out to ~30 subagents
 """
 
 import logging
-from typing import Any
 
 from agent.config import AgentConfig
 from agent.state import AgentState, RCAResult
@@ -22,34 +21,38 @@ logger = logging.getLogger(__name__)
 def classify_rca_node(state: AgentState, config: AgentConfig) -> AgentState:
     """
     Perform initial root cause analysis.
-    
+
     In mock mode: returns a fixture RCA result
     In real mode: uses Claude Sonnet via Amazon Bedrock with MCP tool access
-    
+
     Uber's setup:
     - Claude Sonnet, max 20 turns
     - Queries jaeger MCP, logging MCP, crash-analytics MCP, incident-data MCP
     - Fans out to ~30 parallel subagents (breadcrumbs, release correlation, etc.)
     - Outputs structured XML with category, confidence, requires_code_fix
-    
+
     Note: Fan-out to subagents happens via conditional edge, not in this node.
     """
     logger.info(f"Performing initial RCA for issue {state.issue_id}")
-    
+
     # Initialize turn counter
     state.turn_count["classify_rca"] = 0
-    
+
     # Perform initial RCA (this becomes the primary hypothesis)
     if config.mode == "mock":
         state.rca_result = _mock_rca_result(state)
         state.turn_count["classify_rca"] = 1
-        logger.info(f"Initial RCA (mock): {state.rca_result.category}, confidence {state.rca_result.confidence}")
+        logger.info(
+            f"Initial RCA (mock): {state.rca_result.category}, confidence {state.rca_result.confidence}"
+        )
     else:
         rca_result, turns = _perform_rca_with_llm(state, config)
         state.rca_result = rca_result
         state.turn_count["classify_rca"] = turns
-        logger.info(f"Initial RCA: {state.rca_result.category}, confidence {state.rca_result.confidence}, turns={turns}")
-    
+        logger.info(
+            f"Initial RCA: {state.rca_result.category}, confidence {state.rca_result.confidence}, turns={turns}"
+        )
+
     logger.info("RCA complete, will fan out to subagents next")
     return state
 
@@ -57,12 +60,12 @@ def classify_rca_node(state: AgentState, config: AgentConfig) -> AgentState:
 def _mock_rca_result(state: AgentState) -> RCAResult:
     """
     Generate mock RCA result based on issue data.
-    
+
     For learning: demonstrates what the LLM would produce.
     """
     issue_data = state.issue_data
     exception_type = issue_data.get("exception_type", "")
-    
+
     if exception_type == "KeyError":
         return RCAResult(
             category="code_bug",
@@ -93,7 +96,7 @@ def _mock_rca_result(state: AgentState) -> RCAResult:
                 },
             ],
         )
-    
+
     # Default for other exception types
     return RCAResult(
         category="code_bug",
@@ -108,7 +111,7 @@ def _mock_rca_result(state: AgentState) -> RCAResult:
 def _perform_rca_with_llm(state: AgentState, config: AgentConfig) -> tuple[RCAResult, int]:
     """
     Perform RCA using Claude Sonnet via Bedrock with bounded tool-use loop.
-    
+
     Uses Bedrock Converse API with:
     - Tool calling for code search, log queries, etc.
     - Structured JSON output validated with Pydantic
@@ -116,9 +119,10 @@ def _perform_rca_with_llm(state: AgentState, config: AgentConfig) -> tuple[RCARe
     - Retry on parse failure
     - Low-confidence fallback that triggers escalation
     """
-    from agent.llm import invoke_with_tools, parse_rca_result
     import json
-    
+
+    from agent.llm import invoke_with_tools, parse_rca_result
+
     # Build system prompt
     system_prompt = """You are a debugging assistant analyzing production errors.
 
@@ -141,7 +145,7 @@ Once you've gathered enough context, return your analysis in JSON format inside 
   "evidence": [{"type": "string", "content": "string"}]
 }
 </result>"""
-    
+
     # Build initial message with context
     user_message = f"""Issue: {state.issue_title}
 
@@ -160,14 +164,14 @@ Code context:
 {json.dumps({k: v[:500] + "..." for k, v in state.code_context.items()}, indent=2) if state.code_context else "No code context"}
 
 Analyze this error and determine the root cause."""
-    
+
     messages = [
         {
             "role": "user",
             "content": [{"text": user_message}],
         }
     ]
-    
+
     # Define tools (simplified for demonstration)
     tools = [
         {
@@ -178,12 +182,18 @@ Analyze this error and determine the root cause."""
                     "json": {
                         "type": "object",
                         "properties": {
-                            "pattern": {"type": "string", "description": "Code pattern to search for"},
-                            "file_path": {"type": "string", "description": "Optional file path to search in"},
+                            "pattern": {
+                                "type": "string",
+                                "description": "Code pattern to search for",
+                            },
+                            "file_path": {
+                                "type": "string",
+                                "description": "Optional file path to search in",
+                            },
                         },
-                        "required": ["pattern"]
+                        "required": ["pattern"],
                     }
-                }
+                },
             }
         },
         {
@@ -195,15 +205,18 @@ Analyze this error and determine the root cause."""
                         "type": "object",
                         "properties": {
                             "query": {"type": "string", "description": "Log query string"},
-                            "time_range_minutes": {"type": "integer", "description": "How far back to search"},
+                            "time_range_minutes": {
+                                "type": "integer",
+                                "description": "How far back to search",
+                            },
                         },
-                        "required": ["query"]
+                        "required": ["query"],
                     }
-                }
+                },
             }
         },
     ]
-    
+
     # Invoke with bounded tool-use loop
     try:
         llm_output, turns = invoke_with_tools(
@@ -216,14 +229,14 @@ Analyze this error and determine the root cause."""
             node_name="classify_rca",
             response_schema=RCAResult,
         )
-        
+
         # Parse result with retry capability
         def retry_parse():
             retry_msg = {
                 "role": "user",
-                "content": [{
-                    "text": "Please format your response as valid JSON inside <result> tags."
-                }]
+                "content": [
+                    {"text": "Please format your response as valid JSON inside <result> tags."}
+                ],
             }
             messages.append(retry_msg)
             retry_output, _ = invoke_with_tools(
@@ -237,21 +250,24 @@ Analyze this error and determine the root cause."""
                 response_schema=RCAResult,
             )
             return retry_output
-        
+
         parsed_result = parse_rca_result(llm_output, retry_fn=retry_parse)
-        
+
         # Convert to RCAResult (it's already a dict with all fields)
         result = RCAResult(**parsed_result)
         return result, turns
-        
+
     except Exception as e:
         logger.error(f"Error in RCA analysis: {e}", exc_info=True)
         # Fallback: low confidence triggers escalation
-        return RCAResult(
-            category="unknown",
-            requires_code_fix=False,
-            confidence=0.3,
-            root_cause=f"Analysis error: {str(e)[:100]}",
-            summary="RCA failed - requires manual review",
-            evidence=[],
-        ), 1
+        return (
+            RCAResult(
+                category="unknown",
+                requires_code_fix=False,
+                confidence=0.3,
+                root_cause=f"Analysis error: {str(e)[:100]}",
+                summary="RCA failed - requires manual review",
+                evidence=[],
+            ),
+            1,
+        )

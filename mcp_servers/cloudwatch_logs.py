@@ -17,8 +17,7 @@ from typing import Any
 import boto3
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
-
+from mcp.types import TextContent, Tool
 
 # Initialize MCP server
 app = Server("cloudwatch-logs-mcp")
@@ -96,27 +95,27 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 async def _query_logs(args: dict) -> list[TextContent]:
     """
     Run a CloudWatch Logs Insights query.
-    
+
     Note: This is a simplified implementation. Production would handle
     query polling, pagination, and result formatting more robustly.
     """
     log_group = args["log_group"]
     query = args["query"]
-    
+
     # Parse time range
     if "start_time" in args:
         start_time = datetime.fromisoformat(args["start_time"])
     else:
         start_time = datetime.now() - timedelta(hours=1)
-    
+
     if "end_time" in args:
         end_time = datetime.fromisoformat(args["end_time"])
     else:
         end_time = datetime.now()
-    
+
     try:
         client = boto3.client("logs")
-        
+
         # Start query
         response = client.start_query(
             logGroupName=log_group,
@@ -124,29 +123,29 @@ async def _query_logs(args: dict) -> list[TextContent]:
             endTime=int(end_time.timestamp()),
             queryString=query,
         )
-        
+
         query_id = response["queryId"]
-        
+
         # Poll for results (simplified - should add timeout and error handling)
         for _ in range(30):  # Max 30 seconds
             await asyncio.sleep(1)
-            
+
             results_response = client.get_query_results(queryId=query_id)
             status = results_response["status"]
-            
+
             if status == "Complete":
                 results = results_response["results"]
-                
+
                 # Format results
                 formatted = json.dumps(results, indent=2)
-                
+
                 return [
                     TextContent(
                         type="text",
                         text=f"Query completed. Found {len(results)} results:\n\n{formatted}",
                     )
                 ]
-            
+
             elif status == "Failed":
                 return [
                     TextContent(
@@ -154,14 +153,14 @@ async def _query_logs(args: dict) -> list[TextContent]:
                         text=f"Query failed: {results_response.get('statistics', {})}",
                     )
                 ]
-        
+
         return [
             TextContent(
                 type="text",
                 text="Query timed out after 30 seconds",
             )
         ]
-        
+
     except Exception as e:
         return [
             TextContent(
@@ -175,19 +174,19 @@ async def _get_log_streams(args: dict) -> list[TextContent]:
     """List log streams in a log group."""
     log_group = args["log_group"]
     limit = args.get("limit", 50)
-    
+
     try:
         client = boto3.client("logs")
-        
+
         response = client.describe_log_streams(
             logGroupName=log_group,
             orderBy="LastEventTime",
             descending=True,
             limit=limit,
         )
-        
+
         streams = response["logStreams"]
-        
+
         # Format streams
         stream_list = [
             {
@@ -197,16 +196,16 @@ async def _get_log_streams(args: dict) -> list[TextContent]:
             }
             for s in streams
         ]
-        
+
         formatted = json.dumps(stream_list, indent=2)
-        
+
         return [
             TextContent(
                 type="text",
                 text=f"Found {len(streams)} log streams:\n\n{formatted}",
             )
         ]
-        
+
     except Exception as e:
         return [
             TextContent(

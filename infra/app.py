@@ -14,21 +14,26 @@ Maps to Uber's deployment (Kubernetes + runtime jobs)
 """
 
 import aws_cdk as cdk
-
-from stacks.demo_app_stack import DemoAppStack
 from stacks.agent_stack import AgentStack
+from stacks.demo_app_stack import DemoAppStack
 from stacks.observability_stack import ObservabilityStack
 
 app = cdk.App()
 
-# Environment - use CDK_DEFAULT_ACCOUNT and CDK_DEFAULT_REGION from AWS CLI config
-# This allows anyone to deploy to their own account without hardcoding
+# Environment - for synth without credentials, stacks are env-agnostic
+# When deploying, CDK will use CDK_DEFAULT_ACCOUNT and CDK_DEFAULT_REGION
 import os
 
-env = cdk.Environment(
-    account=os.environ.get("CDK_DEFAULT_ACCOUNT") or app.node.try_get_context("account"),
-    region=os.environ.get("CDK_DEFAULT_REGION") or app.node.try_get_context("region") or "us-east-1",
-)
+# Only set env if deploying (credentials available)
+# This allows `cdk synth` to work without AWS credentials
+env = None
+if os.environ.get("AWS_ACCESS_KEY_ID") or os.environ.get("AWS_PROFILE"):
+    env = cdk.Environment(
+        account=os.environ.get("CDK_DEFAULT_ACCOUNT") or app.node.try_get_context("account"),
+        region=os.environ.get("CDK_DEFAULT_REGION")
+        or app.node.try_get_context("region")
+        or "us-east-1",
+    )
 
 # Demo app stack (the service with bugs)
 demo_app_stack = DemoAppStack(

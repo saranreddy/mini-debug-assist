@@ -15,12 +15,24 @@ Maps to Uber's production services monitored by Healthline.
 from aws_cdk import (
     Duration,
     Stack,
-    aws_ec2 as ec2,
-    aws_ecs as ecs,
-    aws_ecs_patterns as ecs_patterns,
-    aws_logs as logs,
+)
+from aws_cdk import (
     aws_appconfig as appconfig,
+)
+from aws_cdk import (
+    aws_ec2 as ec2,
+)
+from aws_cdk import (
+    aws_ecs as ecs,
+)
+from aws_cdk import (
+    aws_ecs_patterns as ecs_patterns,
+)
+from aws_cdk import (
     aws_iam as iam,
+)
+from aws_cdk import (
+    aws_logs as logs,
 )
 from constructs import Construct
 
@@ -32,11 +44,21 @@ class DemoAppStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         # ===== VPC =====
+        # Create a simple VPC with public subnets only (no NAT gateway = no extra cost)
+        # Environment-agnostic: uses 2 AZs without requiring AWS credentials for synth
         self.vpc = ec2.Vpc(
             self,
             "Vpc",
+            ip_addresses=ec2.IpAddresses.cidr("10.0.0.0/16"),
             max_azs=2,
-            nat_gateways=1,  # Cost optimization: 1 NAT gateway
+            nat_gateways=0,  # No NAT gateway to keep costs low
+            subnet_configuration=[
+                ec2.SubnetConfiguration(
+                    name="Public",
+                    subnet_type=ec2.SubnetType.PUBLIC,
+                    cidr_mask=24,
+                )
+            ],
         )
 
         # ===== ECS Cluster =====
@@ -44,7 +66,7 @@ class DemoAppStack(Stack):
             self,
             "Cluster",
             vpc=self.vpc,
-            container_insights=True,
+            container_insights=False,  # Disable to avoid lookups
         )
 
         # ===== CloudWatch Log Group =====
@@ -89,6 +111,7 @@ class DemoAppStack(Stack):
         }
 
         import json
+
         self.appconfig_config = appconfig.CfnHostedConfigurationVersion(
             self,
             "AppConfigInitialFlags",
@@ -144,7 +167,9 @@ class DemoAppStack(Stack):
         container = task_definition.add_container(
             "DemoApp",
             # In production, this would be built and pushed to ECR
-            image=ecs.ContainerImage.from_registry("public.ecr.aws/docker/library/python:3.11-slim"),
+            image=ecs.ContainerImage.from_registry(
+                "public.ecr.aws/docker/library/python:3.11-slim"
+            ),
             logging=ecs.LogDriver.aws_logs(
                 stream_prefix="demo-app",
                 log_group=self.log_group,
@@ -159,11 +184,10 @@ class DemoAppStack(Stack):
             # For CDK synth purposes, we use a base image and would overlay the app
         )
 
-        container.add_port_mappings(
-            ecs.PortMapping(container_port=8000)
-        )
+        container.add_port_mappings(ecs.PortMapping(container_port=8000))
 
         # Fargate service with ALB
+        # Deploy to public subnets with public IP assignment (no NAT gateway needed)
         self.fargate_service = ecs_patterns.ApplicationLoadBalancedFargateService(
             self,
             "DemoAppService",
@@ -171,6 +195,8 @@ class DemoAppStack(Stack):
             task_definition=task_definition,
             desired_count=1,
             public_load_balancer=True,
+            assign_public_ip=True,  # Required for public subnets
+            task_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
             # Health check
             health_check_grace_period=Duration.seconds(60),
         )
@@ -186,7 +212,7 @@ class DemoAppStack(Stack):
         # ===== CloudWatch Logs Metric Filter =====
         # Create metric filter to count errors from structured logs
         from aws_cdk import aws_logs as logs_
-        
+
         logs_.MetricFilter(
             self,
             "ErrorMetricFilter",
@@ -201,7 +227,7 @@ class DemoAppStack(Stack):
                 "endpoint": "$.path",
             },
         )
-        
+
         # Store references for other stacks
         self.service_name = self.fargate_service.service.service_name
         self.load_balancer_dns = self.fargate_service.load_balancer.load_balancer_dns_name

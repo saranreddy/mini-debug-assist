@@ -177,8 +177,8 @@ This removes all AWS resources with `--force`, leaving nothing billable. The age
 Designed to stay within Free Tier limits or cost a few dollars for a short demo:
 
 - **ECS Fargate**: $0.04/vCPU-hour + $0.004/GB-hour (agent task runs ~2-5 minutes per investigation)
-- **NAT Gateway**: $0.045/hour + $0.045/GB data processed (use public subnets to avoid; see Configuration)
 - **Application Load Balancer**: $0.0225/hour + $0.008/LCU-hour
+- **No NAT Gateway**: Demo uses public subnets with Internet Gateway (no NAT charges)
 - **Bedrock API Calls**:
   - Claude Sonnet 5.5: ~$0.003 per 1K input tokens, ~$0.015 per 1K output tokens
   - Claude Opus 5.5: ~$0.015 per 1K input tokens, ~$0.075 per 1K output tokens
@@ -187,9 +187,9 @@ Designed to stay within Free Tier limits or cost a few dollars for a short demo:
 - **DynamoDB**: On-demand pricing, first 25 RCU/WCU per month free (negligible for demo)
 - **EventBridge**: First 60M custom events/month to Lambda/ECS free (negligible for demo)
 
-**Estimated total cost for 5 investigations over 2 hours: $2-7**
+**Estimated total cost for 5 investigations over 2 hours: $1-3**
 
-**Note**: If you deploy the demo app with a NAT Gateway in private subnets, add ~$0.09/hour ($2.16/day). Consider using public subnets (outbound internet via Internet Gateway) to save costs. See Configuration below.
+**Note**: The demo deploys to public subnets with no NAT Gateway, minimizing networking costs. Fargate tasks get outbound internet via Internet Gateway (free).
 
 Always run `make destroy` when done to avoid ongoing charges.
 

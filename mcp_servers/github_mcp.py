@@ -18,8 +18,7 @@ from typing import Any
 from github import Github
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
-
+from mcp.types import TextContent, Tool
 
 # Initialize MCP server
 app = Server("github-mcp")
@@ -93,8 +92,7 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="create_pr",
             description=(
-                "Create a pull request. "
-                "Use this after generating and validating a fix."
+                "Create a pull request. " "Use this after generating and validating a fix."
             ),
             inputSchema={
                 "type": "object",
@@ -144,35 +142,38 @@ async def _search_code(args: dict) -> list[TextContent]:
     query = args["query"]
     repo_name = args["repo"]
     max_results = args.get("max_results", 10)
-    
+
     try:
         gh = _get_github_client()
-        
+
         # Build search query
         search_query = f"{query} repo:{repo_name}"
-        
+
         # Search
         results = gh.search_code(search_query)
-        
+
         # Format results
         formatted_results = []
         for i, result in enumerate(results[:max_results]):
-            formatted_results.append({
-                "file": result.path,
-                "repo": result.repository.full_name,
-                "url": result.html_url,
-            })
-        
+            formatted_results.append(
+                {
+                    "file": result.path,
+                    "repo": result.repository.full_name,
+                    "url": result.html_url,
+                }
+            )
+
         import json
+
         formatted = json.dumps(formatted_results, indent=2)
-        
+
         return [
             TextContent(
                 type="text",
                 text=f"Found {len(formatted_results)} results:\n\n{formatted}",
             )
         ]
-        
+
     except Exception as e:
         return [
             TextContent(
@@ -187,14 +188,14 @@ async def _read_file(args: dict) -> list[TextContent]:
     repo_name = args["repo"]
     path = args["path"]
     ref = args.get("ref", "main")
-    
+
     try:
         gh = _get_github_client()
         repo = gh.get_repo(repo_name)
-        
+
         # Get file content
         file_content = repo.get_contents(path, ref=ref)
-        
+
         # Decode content
         if isinstance(file_content, list):
             return [
@@ -203,16 +204,16 @@ async def _read_file(args: dict) -> list[TextContent]:
                     text=f"Path {path} is a directory, not a file",
                 )
             ]
-        
+
         content = base64.b64decode(file_content.content).decode("utf-8")
-        
+
         return [
             TextContent(
                 type="text",
                 text=f"File: {path}\n\n```\n{content}\n```",
             )
         ]
-        
+
     except Exception as e:
         return [
             TextContent(
@@ -229,11 +230,11 @@ async def _create_pr(args: dict) -> list[TextContent]:
     body = args["body"]
     head = args["head"]
     base = args.get("base", "main")
-    
+
     try:
         gh = _get_github_client()
         repo = gh.get_repo(repo_name)
-        
+
         # Create PR
         pr = repo.create_pull(
             title=title,
@@ -241,14 +242,14 @@ async def _create_pr(args: dict) -> list[TextContent]:
             head=head,
             base=base,
         )
-        
+
         return [
             TextContent(
                 type="text",
                 text=f"Created PR #{pr.number}: {pr.html_url}",
             )
         ]
-        
+
     except Exception as e:
         return [
             TextContent(

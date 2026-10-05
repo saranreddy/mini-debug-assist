@@ -4,16 +4,12 @@ Tests for MCP client JSON-RPC over stdio.
 Tests the real JSON-RPC protocol implementation with a simple test server.
 """
 
-import json
 import os
-import pytest
-import subprocess
-import sys
-import time
 from pathlib import Path
 
-from agent.mcp_client import MCPClient
+import pytest
 
+from agent.mcp_client import MCPClient
 
 # Simple test MCP server script
 TEST_SERVER_SCRIPT = """
@@ -98,23 +94,23 @@ while True:
 
 class TestMCPJSONRPC:
     """Test MCP client JSON-RPC protocol."""
-    
+
     def test_mcp_mock_mode_fallback(self):
         """Test that MCP_MOCK_MODE=true uses mock implementations."""
         # Set mock mode
         old_mock = os.environ.get("MCP_MOCK_MODE")
         os.environ["MCP_MOCK_MODE"] = "true"
-        
+
         try:
             client = MCPClient()
-            
+
             # Should use mock for unknown server
             result = client.call_tool("search_code", {"pattern": "test"})
-            
+
             # Should get mock result
             assert result["success"] is True
             assert "results" in result
-            
+
         finally:
             if old_mock is not None:
                 os.environ["MCP_MOCK_MODE"] = old_mock
@@ -125,13 +121,13 @@ class TestMCPJSONRPC:
 class TestMCPWithRealServer:
     """
     Test MCP client with one of our own mcp_servers.
-    
+
     These tests start real Python MCP servers as subprocesses.
     """
-    
+
     @pytest.mark.skipif(
         not Path("mcp_servers/cloudwatch_logs.py").exists(),
-        reason="CloudWatch Logs MCP server not found"
+        reason="CloudWatch Logs MCP server not found",
     )
     def test_cloudwatch_logs_server(self):
         """Test with real CloudWatch Logs MCP server."""
@@ -141,68 +137,67 @@ class TestMCPWithRealServer:
             import mcp
         except ImportError:
             pytest.skip("boto3 or mcp SDK not available")
-        
-        from agent import mcp_client
-        
+
         # Use the cloudwatch_logs server from our mcp_servers package
         # This tests the full JSON-RPC protocol with a real server
-        
+
         client = MCPClient()
-        
+
         old_mock = os.environ.get("MCP_MOCK_MODE")
         os.environ["MCP_MOCK_MODE"] = "false"
-        
+
         try:
             # Start the cloudwatch_logs server
             success = client.start_server("cloudwatch_logs")
-            
+
             if not success:
-                pytest.skip("Failed to start cloudwatch_logs MCP server (may need AWS dependencies)")
-            
+                pytest.skip(
+                    "Failed to start cloudwatch_logs MCP server (may need AWS dependencies)"
+                )
+
             # Verify tools were listed
             assert "cloudwatch_logs" in client.tools_cache
             tools = client.tools_cache["cloudwatch_logs"]
             assert len(tools) > 0
-            
+
             tool_names = [t["name"] for t in tools]
             assert "query_logs" in tool_names or "get_log_streams" in tool_names
-            
+
             # Call a tool (will fail without real AWS but tests the protocol)
-            result = client.call_tool("get_log_streams", {
-                "log_group": "/aws/lambda/test",
-                "limit": 10
-            })
-            
+            result = client.call_tool(
+                "get_log_streams", {"log_group": "/aws/lambda/test", "limit": 10}
+            )
+
             # Should get a structured response (even if it's an AWS error)
             assert isinstance(result, dict)
             # Result should have success key or content
             assert "success" in result or "result" in result or "error" in result
-            
+
         finally:
             if old_mock is not None:
                 os.environ["MCP_MOCK_MODE"] = old_mock
             else:
                 os.environ.pop("MCP_MOCK_MODE", None)
-            
+
             client.stop_all()
-    
+
     def test_real_mode_no_fallback(self):
         """Test that real mode never silently falls back to mocks."""
         client = MCPClient()
-        
+
         old_mock = os.environ.get("MCP_MOCK_MODE")
         os.environ["MCP_MOCK_MODE"] = "false"
-        
+
         try:
             # Call tool without starting any servers
             result = client.call_tool("unknown_tool", {"test": "data"})
-            
+
             # Should get an error, not a mock result
             assert result["success"] is False
             assert "isError" in result
             assert result["isError"] is True
             assert "No MCP servers started" in result["error"]
-            
+
         finally:
             if old_mock is not None:
                 os.environ["MCP_MOCK_MODE"] = old_mock

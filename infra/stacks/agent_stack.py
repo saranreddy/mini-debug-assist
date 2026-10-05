@@ -12,19 +12,35 @@ Maps to Uber's runtime jobs on Kubernetes with Buildkite CI.
 """
 
 from aws_cdk import (
-    Duration,
     RemovalPolicy,
     Stack,
-    aws_events as events,
-    aws_events_targets as targets,
-    aws_ecs as ecs,
-    aws_ec2 as ec2,
-    aws_iam as iam,
-    aws_logs as logs,
+)
+from aws_cdk import (
     aws_codebuild as codebuild,
-    aws_secretsmanager as secretsmanager,
+)
+from aws_cdk import (
     aws_dynamodb as dynamodb,
-    aws_ecr_assets as ecr_assets,
+)
+from aws_cdk import (
+    aws_ec2 as ec2,
+)
+from aws_cdk import (
+    aws_ecs as ecs,
+)
+from aws_cdk import (
+    aws_events as events,
+)
+from aws_cdk import (
+    aws_events_targets as targets,
+)
+from aws_cdk import (
+    aws_iam as iam,
+)
+from aws_cdk import (
+    aws_logs as logs,
+)
+from aws_cdk import (
+    aws_secretsmanager as secretsmanager,
 )
 from constructs import Construct
 
@@ -35,11 +51,7 @@ class AgentStack(Stack):
     """Stack for the debugging agent infrastructure."""
 
     def __init__(
-        self,
-        scope: Construct,
-        construct_id: str,
-        demo_app_stack: DemoAppStack,
-        **kwargs
+        self, scope: Construct, construct_id: str, demo_app_stack: DemoAppStack, **kwargs
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
@@ -51,15 +63,14 @@ class AgentStack(Stack):
             secret_name="mini-debug-assist/github-token",
             description="GitHub token for creating PRs",
         )
-        
+
         # ===== DynamoDB Deduplication Table =====
         self.dedup_table = dynamodb.Table(
             self,
             "DedupTable",
             table_name="mini-debug-assist-dedup",
             partition_key=dynamodb.Attribute(
-                name="error_signature",
-                type=dynamodb.AttributeType.STRING
+                name="error_signature", type=dynamodb.AttributeType.STRING
             ),
             time_to_live_attribute="ttl",
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -75,7 +86,7 @@ class AgentStack(Stack):
         )
 
         # Bedrock permissions (matches model IDs in agent/config.py)
-        # Model IDs from: 
+        # Model IDs from:
         # - https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5-5.html
         # - https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-5.html
         # - Claude Sonnet 5.5 (latest): anthropic.claude-sonnet-5-5
@@ -104,7 +115,7 @@ class AgentStack(Stack):
                 ],
             )
         )
-        
+
         # Bedrock Converse API (new API for tool use)
         self.agent_role.add_to_policy(
             iam.PolicyStatement(
@@ -181,23 +192,23 @@ class AgentStack(Stack):
 
         # Secrets Manager read (for GitHub token)
         self.github_token_secret.grant_read(self.agent_role)
-        
+
         # DynamoDB access (for deduplication)
         self.dedup_table.grant_read_write_data(self.agent_role)
 
         # ===== Build Agent Container Image =====
         # Build Docker image from agent/ directory
         import os
+
         agent_dockerfile_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "agent"
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "agent"
         )
-        
+
         self.agent_image = ecs.ContainerImage.from_asset(
             agent_dockerfile_path,
             file="Dockerfile",
         )
-        
+
         # ===== Agent Task Definition =====
         self.agent_task_def = ecs.FargateTaskDefinition(
             self,
@@ -228,9 +239,7 @@ class AgentStack(Stack):
                 "GITHUB_REPO": os.getenv("GITHUB_REPO", ""),
             },
             secrets={
-                "GITHUB_TOKEN": ecs.Secret.from_secrets_manager(
-                    self.github_token_secret
-                ),
+                "GITHUB_TOKEN": ecs.Secret.from_secrets_manager(self.github_token_secret),
             },
         )
 
@@ -244,9 +253,7 @@ class AgentStack(Stack):
                 source=["aws.cloudwatch"],
                 detail_type=["CloudWatch Alarm State Change"],
                 detail={
-                    "state": {
-                        "value": ["ALARM"]
-                    },
+                    "state": {"value": ["ALARM"]},
                     # Optional: filter for specific alarms
                     # "alarmName": [{"prefix": "MiniDebugAssist-"}]
                 },
@@ -259,9 +266,7 @@ class AgentStack(Stack):
             targets.EcsTask(
                 cluster=demo_app_stack.cluster,
                 task_definition=self.agent_task_def,
-                subnet_selection=ec2.SubnetSelection(
-                    subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS
-                ),
+                subnet_selection=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
                 container_overrides=[
                     targets.ContainerOverride(
                         container_name="AgentContainer",
@@ -291,28 +296,30 @@ class AgentStack(Stack):
                 build_image=codebuild.LinuxBuildImage.STANDARD_7_0,
                 compute_type=codebuild.ComputeType.SMALL,
             ),
-            build_spec=codebuild.BuildSpec.from_object({
-                "version": "0.2",
-                "phases": {
-                    "install": {
-                        "runtime-versions": {
-                            "python": "3.11",
+            build_spec=codebuild.BuildSpec.from_object(
+                {
+                    "version": "0.2",
+                    "phases": {
+                        "install": {
+                            "runtime-versions": {
+                                "python": "3.11",
+                            },
+                            "commands": [
+                                "pip install -e .[dev]",
+                            ],
                         },
-                        "commands": [
-                            "pip install -e .[dev]",
-                        ],
+                        "build": {
+                            "commands": [
+                                "pytest -v --tb=short",
+                            ],
+                        },
                     },
-                    "build": {
-                        "commands": [
-                            "pytest -v --tb=short",
-                        ],
+                    "reports": {
+                        "test-results": {
+                            "files": ["test-results.xml"],
+                            "file-format": "JUNITXML",
+                        },
                     },
-                },
-                "reports": {
-                    "test-results": {
-                        "files": ["test-results.xml"],
-                        "file-format": "JUNITXML",
-                    },
-                },
-            }),
+                }
+            ),
         )

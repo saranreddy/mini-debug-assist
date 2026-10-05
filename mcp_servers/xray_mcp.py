@@ -17,8 +17,7 @@ from typing import Any
 import boto3
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool, TextContent
-
+from mcp.types import TextContent, Tool
 
 # Initialize MCP server
 app = Server("xray-mcp")
@@ -90,17 +89,17 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 async def _get_trace(args: dict) -> list[TextContent]:
     """Get a specific trace by ID."""
     trace_id = args["trace_id"]
-    
+
     try:
         client = boto3.client("xray")
-        
+
         # Get trace
         response = client.batch_get_traces(
             TraceIds=[trace_id],
         )
-        
+
         traces = response.get("Traces", [])
-        
+
         if not traces:
             return [
                 TextContent(
@@ -108,25 +107,25 @@ async def _get_trace(args: dict) -> list[TextContent]:
                     text=f"Trace {trace_id} not found",
                 )
             ]
-        
+
         trace = traces[0]
-        
+
         # Format trace (simplified)
         formatted = {
             "id": trace["Id"],
             "duration": trace.get("Duration"),
             "segments": len(trace.get("Segments", [])),
         }
-        
+
         formatted_json = json.dumps(formatted, indent=2)
-        
+
         return [
             TextContent(
                 type="text",
                 text=f"Trace details:\n\n{formatted_json}",
             )
         ]
-        
+
     except Exception as e:
         return [
             TextContent(
@@ -139,30 +138,30 @@ async def _get_trace(args: dict) -> list[TextContent]:
 async def _query_traces(args: dict) -> list[TextContent]:
     """Query traces by filter expression."""
     filter_expression = args["filter_expression"]
-    
+
     # Parse time range
     if "start_time" in args:
         start_time = datetime.fromisoformat(args["start_time"])
     else:
         start_time = datetime.now() - timedelta(hours=1)
-    
+
     if "end_time" in args:
         end_time = datetime.fromisoformat(args["end_time"])
     else:
         end_time = datetime.now()
-    
+
     try:
         client = boto3.client("xray")
-        
+
         # Get trace summaries
         response = client.get_trace_summaries(
             StartTime=start_time,
             EndTime=end_time,
             FilterExpression=filter_expression,
         )
-        
+
         summaries = response.get("TraceSummaries", [])
-        
+
         # Format summaries
         formatted_summaries = [
             {
@@ -173,16 +172,16 @@ async def _query_traces(args: dict) -> list[TextContent]:
             }
             for s in summaries[:20]  # Limit to 20 results
         ]
-        
+
         formatted = json.dumps(formatted_summaries, indent=2)
-        
+
         return [
             TextContent(
                 type="text",
                 text=f"Found {len(formatted_summaries)} traces:\n\n{formatted}",
             )
         ]
-        
+
     except Exception as e:
         return [
             TextContent(
