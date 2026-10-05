@@ -7,9 +7,18 @@ Prevents drift between infrastructure definitions and operational scripts.
 import json
 import subprocess
 
+import pytest
+
 
 def test_cdk_synth_produces_expected_outputs():
     """Test that CDK synth produces expected stack names and outputs."""
+    # Install CDK dependencies if not already installed
+    subprocess.run(
+        ["pip", "install", "-q", "-r", "requirements.txt"],
+        cwd="infra",
+        capture_output=True,
+    )
+
     result = subprocess.run(
         ["npx", "aws-cdk@latest", "synth", "--quiet"],
         cwd="infra",
