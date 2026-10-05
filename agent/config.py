@@ -26,11 +26,14 @@ class AgentConfig:
     
     # Model configuration (maps to Uber's per-node model assignments)
     # In MOCK mode, these are ignored and fixture responses are used
+    # Use cross-region inference profiles for better availability
     bedrock_region: str = "us-east-1"
-    model_classify: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    model_fix: str = "anthropic.claude-3-opus-20240229-v1:0"
-    model_validate: str = "anthropic.claude-3-sonnet-20240229-v1:0"
-    model_create_diff: str = "anthropic.claude-3-sonnet-20240229-v1:0"
+    model_classify: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+    model_fix: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+    model_validate: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+    model_create_diff: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+    # For escalation (disagreement, high complexity)
+    model_escalate: str = "us.anthropic.claude-3-5-opus-20250219-v1:0"
     
     # Turn caps (maps to Uber's max-turn guardrails)
     max_turns_classify: int = 20
@@ -56,6 +59,26 @@ class AgentConfig:
             mode=mode,
             agent_type=os.getenv("AGENT_TYPE", "python-web"),
             bedrock_region=os.getenv("AWS_REGION", "us-east-1"),
+            model_classify=os.getenv(
+                "MODEL_CLASSIFY",
+                "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+            ),
+            model_fix=os.getenv(
+                "MODEL_FIX",
+                "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+            ),
+            model_validate=os.getenv(
+                "MODEL_VALIDATE",
+                "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+            ),
+            model_create_diff=os.getenv(
+                "MODEL_CREATE_DIFF",
+                "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+            ),
+            model_escalate=os.getenv(
+                "MODEL_ESCALATE",
+                "us.anthropic.claude-3-5-opus-20250219-v1:0"
+            ),
             github_token=os.getenv("GITHUB_TOKEN"),
             github_repo=os.getenv("GITHUB_REPO"),
             enable_langsmith=os.getenv("LANGSMITH_API_KEY") is not None,

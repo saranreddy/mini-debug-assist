@@ -74,7 +74,7 @@ class AgentStack(Stack):
             description="IAM role for debug agent with least-privilege access",
         )
 
-        # Bedrock InvokeModel permission (matches configured model IDs)
+        # Bedrock InvokeModel permission (matches configured model IDs including inference profiles)
         self.agent_role.add_to_policy(
             iam.PolicyStatement(
                 sid="BedrockInvokeModel",
@@ -83,10 +83,29 @@ class AgentStack(Stack):
                     "bedrock:InvokeModelWithResponseStream",
                 ],
                 resources=[
-                    # Match actual model IDs from config
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0",
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-opus-20240229-v1:0",
-                    # Also allow wildcard for inference profiles if used
+                    # Cross-region inference profiles (us.*)
+                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-5-opus-20250219-v1:0",
+                    # Direct model access
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-5-opus-20250219-v1:0",
+                    # Wildcard for flexibility
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-*",
+                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-*",
+                ],
+            )
+        )
+        
+        # Bedrock Converse API (new API for tool use)
+        self.agent_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="BedrockConverse",
+                actions=[
+                    "bedrock:Converse",
+                    "bedrock:ConverseStream",
+                ],
+                resources=[
+                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-*",
                     f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-*",
                 ],
             )

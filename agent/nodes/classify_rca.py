@@ -42,10 +42,13 @@ def classify_rca_node(state: AgentState, config: AgentConfig) -> AgentState:
     # Perform initial RCA (this becomes the primary hypothesis)
     if config.mode == "mock":
         state.rca_result = _mock_rca_result(state)
+        state.turn_count["classify_rca"] = 1
         logger.info(f"Initial RCA (mock): {state.rca_result.category}, confidence {state.rca_result.confidence}")
     else:
-        state.rca_result = _perform_rca_with_llm(state, config)
-        logger.info(f"Initial RCA: {state.rca_result.category}, confidence {state.rca_result.confidence}")
+        rca_result, turns = _perform_rca_with_llm(state, config)
+        state.rca_result = rca_result
+        state.turn_count["classify_rca"] = turns
+        logger.info(f"Initial RCA: {state.rca_result.category}, confidence {state.rca_result.confidence}, turns={turns}")
     
     logger.info("RCA complete, will fan out to subagents next")
     return state
@@ -102,118 +105,153 @@ def _mock_rca_result(state: AgentState) -> RCAResult:
     )
 
 
-def _perform_rca_with_llm(state: AgentState, config: AgentConfig) -> RCAResult:
+def _perform_rca_with_llm(state: AgentState, config: AgentConfig) -> tuple[RCAResult, int]:
     """
-    Perform RCA using Claude Sonnet via Bedrock with MCP tool access.
+    Perform RCA using Claude Sonnet via Bedrock with bounded tool-use loop.
     
-    This is where the real LLM interaction happens:
-    1. Build prompt with issue data, logs, traces, code context
-    2. Give the LLM access to MCP tools (cloudwatch, xray, github)
-    3. Let it analyze up to max_turns_classify turns
-    4. Parse structured output into RCAResult
-    
-    For production implementation, you'd use langchain-aws BedrockChat
-    with tools bound via MCP servers.
+    Uses Bedrock Converse API with:
+    - Tool calling for code search, log queries, etc.
+    - Structured JSON output validated with Pydantic
+    - Bounded turns (max_turns_classify)
+    - Retry on parse failure
+    - Low-confidence fallback that triggers escalation
     """
-    import boto3
+    from agent.llm import invoke_with_tools, parse_rca_result
     import json
     
-    # Initialize Bedrock client
-    bedrock = boto3.client("bedrock-runtime", region_name=config.bedrock_region)
+    # Build system prompt
+    system_prompt = """You are a debugging assistant analyzing production errors.
+
+Analyze the provided logs, traces, and code to determine the root cause.
+
+You have access to tools:
+- search_code: Search for code patterns
+- query_logs: Query CloudWatch Logs
+- get_recent_commits: Check recent code changes
+
+Once you've gathered enough context, return your analysis in JSON format inside <result> tags:
+
+<result>
+{
+  "category": "code_bug" | "third_party" | "infra" | "network",
+  "requires_code_fix": true | false,
+  "confidence": 0.0 to 1.0,
+  "root_cause": "Brief description of the root cause",
+  "summary": "One-line summary",
+  "evidence": [{"type": "string", "content": "string"}]
+}
+</result>"""
     
-    # Build prompt
-    prompt = _build_rca_prompt(state)
-    
-    # Invoke model (simplified - real version would use langchain with tools)
-    try:
-        response = bedrock.invoke_model(
-            modelId=config.model_classify,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 4096,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-            }),
-        )
-        
-        result = json.loads(response["body"].read())
-        content = result["content"][0]["text"]
-        
-        # Parse LLM output into RCAResult
-        return _parse_rca_output(content)
-        
-    except Exception as e:
-        logger.error(f"Error performing RCA with LLM: {e}")
-        state.errors.append(f"RCA failed: {e}")
-        
-        # Return low-confidence result
-        return RCAResult(
-            category="unknown",
-            requires_code_fix=False,
-            confidence=0.0,
-            root_cause=f"RCA failed: {e}",
-            summary="Unable to perform automatic RCA",
-        )
+    # Build initial message with context
+    user_message = f"""Issue: {state.issue_title}
 
-
-def _build_rca_prompt(state: AgentState) -> str:
-    """Build the RCA prompt from state."""
-    return f"""You are a debugging agent performing root cause analysis.
-
-Issue: {state.issue_title}
-Exception: {state.issue_data.get('exception_type')} - {state.issue_data.get('exception_message')}
+Exception: {state.issue_data.get('exception_type', 'Unknown')} - {state.issue_data.get('exception_message', '')}
 
 Stack Trace:
 {state.issue_data.get('stack_trace', 'N/A')}
 
-Recent Logs:
-{_format_logs(state.logs)}
+Logs (recent errors):
+{json.dumps(state.logs[:10], indent=2) if state.logs else "No logs available"}
 
-Code Context:
-{_format_code_context(state.code_context)}
+Traces (failed requests):
+{json.dumps(state.traces[:5], indent=2) if state.traces else "No traces available"}
 
-Analyze this issue and provide:
-1. Category (code_bug, third_party, infra, network)
-2. Whether a code fix is required
-3. Confidence level (0.0-1.0)
-4. Root cause explanation
-5. Summary
+Code context:
+{json.dumps({k: v[:500] + "..." for k, v in state.code_context.items()}, indent=2) if state.code_context else "No code context"}
 
-Output in structured format."""
-
-
-def _format_logs(logs: list[dict]) -> str:
-    """Format logs for prompt."""
-    return "\n".join([
-        f"[{log.get('timestamp')}] {log.get('level')}: {log.get('message')}"
-        for log in logs[:10]  # Limit to avoid context bloat
-    ])
-
-
-def _format_code_context(code_context: dict[str, str]) -> str:
-    """Format code context for prompt."""
-    return "\n\n".join([
-        f"File: {file}\n{content}"
-        for file, content in code_context.items()
-    ])
-
-
-def _parse_rca_output(content: str) -> RCAResult:
-    """
-    Parse LLM output into RCAResult.
+Analyze this error and determine the root cause."""
     
-    In production, you'd use structured output or XML parsing.
-    For simplicity, we'll do basic text parsing.
-    """
-    # Simplified parsing - production would use structured output
-    return RCAResult(
-        category="code_bug",
-        requires_code_fix=True,
-        confidence=0.8,
-        root_cause=content[:500],  # Truncate for demo
-        summary=content[:200],
-    )
+    messages = [
+        {
+            "role": "user",
+            "content": [{"text": user_message}],
+        }
+    ]
+    
+    # Define tools (simplified for demonstration)
+    tools = [
+        {
+            "toolSpec": {
+                "name": "search_code",
+                "description": "Search for code patterns in the repository",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {"type": "string", "description": "Code pattern to search for"},
+                            "file_path": {"type": "string", "description": "Optional file path to search in"},
+                        },
+                        "required": ["pattern"]
+                    }
+                }
+            }
+        },
+        {
+            "toolSpec": {
+                "name": "query_logs",
+                "description": "Query CloudWatch Logs for additional context",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Log query string"},
+                            "time_range_minutes": {"type": "integer", "description": "How far back to search"},
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }
+        },
+    ]
+    
+    # Invoke with bounded tool-use loop
+    try:
+        llm_output, turns = invoke_with_tools(
+            model_id=config.model_classify,
+            region=config.bedrock_region,
+            system_prompt=system_prompt,
+            messages=messages,
+            tools=tools,
+            max_turns=config.max_turns_classify,
+            node_name="classify_rca",
+            response_schema=RCAResult,
+        )
+        
+        # Parse result with retry capability
+        def retry_parse():
+            retry_msg = {
+                "role": "user",
+                "content": [{
+                    "text": "Please format your response as valid JSON inside <result> tags."
+                }]
+            }
+            messages.append(retry_msg)
+            retry_output, _ = invoke_with_tools(
+                model_id=config.model_classify,
+                region=config.bedrock_region,
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=None,  # No tools on retry
+                max_turns=1,
+                node_name="classify_rca_retry",
+                response_schema=RCAResult,
+            )
+            return retry_output
+        
+        parsed_result = parse_rca_result(llm_output, retry_fn=retry_parse)
+        
+        # Convert to RCAResult (it's already a dict with all fields)
+        result = RCAResult(**parsed_result)
+        return result, turns
+        
+    except Exception as e:
+        logger.error(f"Error in RCA analysis: {e}", exc_info=True)
+        # Fallback: low confidence triggers escalation
+        return RCAResult(
+            category="unknown",
+            requires_code_fix=False,
+            confidence=0.3,
+            root_cause=f"Analysis error: {str(e)[:100]}",
+            summary="RCA failed - requires manual review",
+            evidence=[],
+        ), 1
