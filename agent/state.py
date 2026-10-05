@@ -67,6 +67,15 @@ def _merge_subagent_results(left: dict, right: dict) -> dict:
     return {**left, **right}
 
 
+def _merge_turn_counts(left: dict, right: dict) -> dict:
+    """
+    Merge turn counts from parallel branches.
+    
+    Each node/subagent updates with its own key.
+    """
+    return {**left, **right}
+
+
 @dataclass
 class AgentState:
     """
@@ -121,5 +130,5 @@ class AgentState:
     pr_url: Optional[str] = None
     
     # Tracking
-    turn_count: dict[str, int] = field(default_factory=dict)
+    turn_count: Annotated[dict[str, int], _merge_turn_counts] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)

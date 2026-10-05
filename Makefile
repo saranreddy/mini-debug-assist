@@ -1,41 +1,46 @@
-.PHONY: help install test lint run-demo run-agent-mock synth clean
-
-help:
-	@echo "Mini Debug Assist - Makefile targets:"
-	@echo "  install          Install dependencies"
-	@echo "  test             Run tests"
-	@echo "  lint             Run linters (black, ruff)"
-	@echo "  run-demo         Start demo FastAPI app locally"
-	@echo "  run-agent-mock   Run agent in MOCK mode (no AWS)"
-	@echo "  synth            Synthesize CDK infrastructure"
-	@echo "  clean            Clean build artifacts"
-
-install:
-	pip install -e ".[dev,infra]"
-
+.PHONY: test
 test:
-	pytest -v --cov=demo_app --cov=agent --cov=mcp_servers
+	pytest -xvs
 
+.PHONY: test-coverage
+test-coverage:
+	pytest --cov=agent --cov=demo_app --cov-report=html --cov-report=term
+
+.PHONY: lint
 lint:
-	black --check demo_app agent mcp_servers tests
-	ruff check demo_app agent mcp_servers tests
+	ruff check agent demo_app tests
+	black --check agent demo_app tests
 
+.PHONY: format
 format:
-	black demo_app agent mcp_servers tests
-	ruff check --fix demo_app agent mcp_servers tests
+	black agent demo_app tests
+	ruff check --fix agent demo_app tests
 
-run-demo:
-	cd demo_app && uvicorn demo_app.main:app --reload --port 8000
+.PHONY: e2e-local
+e2e-local:
+	@echo "Running end-to-end test in local mode with moto..."
+	MCP_MOCK_MODE=true \
+	AGENT_MODE=aws \
+	DEDUP_TABLE_NAME=test-dedup \
+	DEMO_APP_LOG_GROUP=/test/logs \
+	python -m pytest tests/test_e2e_local.py -xvs
 
-run-agent-mock:
-	python -m agent.cli --mode mock --issue tests/fixtures/keyerror_issue.yaml
+.PHONY: docker-build-agent
+docker-build-agent:
+	docker build -t mini-debug-assist-agent -f agent/Dockerfile .
 
-synth:
-	cd infra && cdk synth
+.PHONY: cdk-synth
+cdk-synth:
+	cd infra && npx cdk synth
 
+.PHONY: cdk-deploy
+cdk-deploy:
+	cd infra && npx cdk deploy --all
+
+.PHONY: clean
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} +
-	find . -type d -name "*.egg-info" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
-	rm -rf build dist .pytest_cache .coverage htmlcov
-	cd infra && rm -rf cdk.out
+	find . -type d -name ".pytest_cache" -exec rm -rf {} +
+	find . -type d -name ".ruff_cache" -exec rm -rf {} +
+	rm -rf htmlcov .coverage
