@@ -9,6 +9,12 @@
 
 A learning-focused demo of modern agentic patterns for platform engineers: Multi-agent orchestration via LangGraph, real-world AWS integration (Bedrock/CloudWatch/DynamoDB), MCP tool protocols, and autonomous code modification with safety guardrails.
 
+## Watch the 2.5-Minute Explainer
+
+[![Mini Debug Assist Explainer Video](docs/explainer-poster.png)](docs/explainer.mp4)
+
+*A 2:37 walkthrough of the architecture, agent pipeline, and AWS deployment—aimed at people who know AWS but not necessarily code.*
+
 ## Who Should Use This
 
 This repo is for engineers learning about autonomous agents, AI-powered debugging, and event-driven AWS architectures—especially those building internal tooling or studying production agent patterns.
