@@ -4,11 +4,10 @@ Classify/RCA Node (LLM: Claude Sonnet, max 20 turns)
 Maps to Uber's classify/RCA node:
 - Categorizes the issue
 - Determines if code fix is needed
-- Performs root cause analysis
-- Fans out to parallel subagents
-- Outputs structured result
+- Performs initial root cause analysis
+- Triggers fan-out to parallel subagents via Send
 
-Uber uses Claude Sonnet with structured XML output.
+Uber uses Claude Sonnet with structured XML output and fans out to ~30 subagents.
 """
 
 import logging
@@ -22,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 def classify_rca_node(state: AgentState, config: AgentConfig) -> AgentState:
     """
-    Perform root cause analysis.
+    Perform initial root cause analysis.
     
     In mock mode: returns a fixture RCA result
     In real mode: uses Claude Sonnet via Amazon Bedrock with MCP tool access
@@ -32,21 +31,23 @@ def classify_rca_node(state: AgentState, config: AgentConfig) -> AgentState:
     - Queries jaeger MCP, logging MCP, crash-analytics MCP, incident-data MCP
     - Fans out to ~30 parallel subagents (breadcrumbs, release correlation, etc.)
     - Outputs structured XML with category, confidence, requires_code_fix
+    
+    Note: Fan-out to subagents happens via conditional edge, not in this node.
     """
-    logger.info(f"Performing RCA for issue {state.issue_id}")
+    logger.info(f"Performing initial RCA for issue {state.issue_id}")
     
     # Initialize turn counter
     state.turn_count["classify_rca"] = 0
     
+    # Perform initial RCA (this becomes the primary hypothesis)
     if config.mode == "mock":
-        # Mock mode: return fixture RCA
         state.rca_result = _mock_rca_result(state)
-        logger.info(f"RCA (mock): {state.rca_result.category}, confidence {state.rca_result.confidence}")
+        logger.info(f"Initial RCA (mock): {state.rca_result.category}, confidence {state.rca_result.confidence}")
     else:
-        # Real mode: use Bedrock with MCP tools
         state.rca_result = _perform_rca_with_llm(state, config)
-        logger.info(f"RCA: {state.rca_result.category}, confidence {state.rca_result.confidence}")
+        logger.info(f"Initial RCA: {state.rca_result.category}, confidence {state.rca_result.confidence}")
     
+    logger.info("RCA complete, will fan out to subagents next")
     return state
 
 

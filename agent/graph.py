@@ -36,9 +36,43 @@ from agent.nodes.context_collector import context_collector_node
 from agent.nodes.create_diff import create_diff_node
 from agent.nodes.fix import fix_node
 from agent.nodes.validate import validate_node
+from agent.nodes.subagents.breadcrumbs import breadcrumbs_subagent
+from agent.nodes.subagents.flag_correlation import flag_correlation_subagent
+from agent.nodes.subagents.offending_commit import offending_commit_subagent
 from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+
+def _fan_out_to_subagents(state: AgentState, config: AgentConfig) -> list:
+    """
+    Fan out to parallel subagents using Send.
+    
+    This is called by the conditional edge after classify_rca.
+    Returns a list of Send objects to trigger parallel execution.
+    """
+    from langgraph.types import Send
+    
+    # Convert state to dict for subagents
+    state_dict = {
+        "issue_id": state.issue_id,
+        "issue_title": state.issue_title,
+        "issue_data": state.issue_data,
+        "logs": state.logs,
+        "traces": state.traces,
+        "code_context": state.code_context,
+        "rca_result": state.rca_result,
+        "subagent_results": state.subagent_results,
+    }
+    
+    logger.info("Fanning out to 3 parallel subagents")
+    
+    # Return list of Send objects
+    return [
+        Send("breadcrumbs_subagent", (state_dict, config)),
+        Send("flag_correlation_subagent", (state_dict, config)),
+        Send("offending_commit_subagent", (state_dict, config)),
+    ]
 
 
 def create_debug_agent_graph(config: AgentConfig) -> StateGraph:
@@ -48,15 +82,26 @@ def create_debug_agent_graph(config: AgentConfig) -> StateGraph:
     This is the fixed plan that Uber uses:
     - No free-form planning (reduces hallucination)
     - Deterministic nodes where possible
+    - Parallel subagent fan-out with Send
     - Clear state passing between nodes
     - Bounded retry loops with guardrails
+    
+    Flow:
+        context_collector
+            ↓
+        classify_rca (returns Send list)
+            ↓ ↓ ↓ (fan out)
+        [breadcrumbs, flag_correlation, offending_commit] (parallel)
+            ↓ ↓ ↓ (merge)
+        consolidator
+            ↓
+        fix → validate → create_diff
     """
     
     # Create state graph
     graph = StateGraph(AgentState)
     
-    # Add nodes
-    # Wrap each node function to pass config
+    # Add main pipeline nodes
     graph.add_node(
         "context_collector",
         lambda state: context_collector_node(state, config)
@@ -65,10 +110,29 @@ def create_debug_agent_graph(config: AgentConfig) -> StateGraph:
         "classify_rca",
         lambda state: classify_rca_node(state, config)
     )
+    
+    # Add parallel subagent nodes
+    # These receive (state_dict, config) tuples from Send
+    graph.add_node(
+        "breadcrumbs_subagent",
+        lambda args: breadcrumbs_subagent(*args)
+    )
+    graph.add_node(
+        "flag_correlation_subagent",
+        lambda args: flag_correlation_subagent(*args)
+    )
+    graph.add_node(
+        "offending_commit_subagent",
+        lambda args: offending_commit_subagent(*args)
+    )
+    
+    # Add consolidator (merges subagent results)
     graph.add_node(
         "consolidator",
         lambda state: consolidator_node(state, config)
     )
+    
+    # Add remaining nodes
     graph.add_node(
         "fix",
         lambda state: fix_node(state, config)
@@ -85,7 +149,17 @@ def create_debug_agent_graph(config: AgentConfig) -> StateGraph:
     # Define edges (the fixed plan)
     graph.set_entry_point("context_collector")
     graph.add_edge("context_collector", "classify_rca")
-    graph.add_edge("classify_rca", "consolidator")
+    
+    # classify_rca fans out to subagents via conditional edge
+    graph.add_conditional_edges(
+        "classify_rca",
+        lambda state: _fan_out_to_subagents(state, config),
+    )
+    
+    # Subagents all edge to consolidator
+    graph.add_edge("breadcrumbs_subagent", "consolidator")
+    graph.add_edge("flag_correlation_subagent", "consolidator")
+    graph.add_edge("offending_commit_subagent", "consolidator")
     
     # Consolidator decides: escalate or proceed
     graph.add_conditional_edges(

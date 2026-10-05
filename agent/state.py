@@ -6,7 +6,24 @@ This maps to Uber's "shared state" design principle.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Annotated
+from operator import add
+
+from langgraph.graph import add_messages
+
+
+@dataclass
+class SubagentResult:
+    """
+    Result from a parallel RCA subagent.
+    
+    Maps to Uber's ~30 subagent types (breadcrumbs, release correlation, etc.)
+    """
+    subagent_type: str
+    hypothesis: str
+    confidence: float  # 0.0 to 1.0
+    evidence: list[str]
+    supporting_data: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -41,6 +58,15 @@ class ValidationResult:
     issues: list[str] = field(default_factory=list)
 
 
+def _merge_subagent_results(left: dict, right: dict) -> dict:
+    """
+    Merge subagent results from parallel branches.
+    
+    Each subagent updates the dict with its own key, so we can safely merge.
+    """
+    return {**left, **right}
+
+
 @dataclass
 class AgentState:
     """
@@ -54,6 +80,9 @@ class AgentState:
     - fix populates fix_result
     - validate populates validation_result
     - create_diff creates the PR
+    
+    Note: subagent_results uses Annotated with merge function to handle
+    parallel updates from multiple subagents.
     """
     
     # Input (from issue tracking system)
@@ -70,7 +99,8 @@ class AgentState:
     rca_result: Optional[RCAResult] = None
     
     # Subagent results (from parallel subagents)
-    subagent_results: dict[str, Any] = field(default_factory=dict)
+    # Annotated with merge function to handle concurrent updates
+    subagent_results: Annotated[dict[str, Any], _merge_subagent_results] = field(default_factory=dict)
     
     # Consolidation decision
     needs_human_escalation: bool = False

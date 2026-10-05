@@ -13,6 +13,7 @@ flowchart TB
     %% Styles
     classDef demo fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
     classDef agent fill:#f3e5f5,stroke:#5e35b1,stroke-width:2px
+    classDef subagent fill:#fce4ec,stroke:#c2185b,stroke-width:2px
     classDef mcp fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
     classDef aws fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
     
@@ -26,9 +27,16 @@ flowchart TB
     subgraph Agent["LangGraph Agent (agent/)"]
         CC["context_collector<br/>(deterministic)"]
         RCA["classify_rca<br/>(Claude Sonnet)"]
-        CONS["consolidator"]
+        
+        subgraph Subagents["Parallel Subagents (3)"]
+            SA1["breadcrumbs"]
+            SA2["flag_correlation"]
+            SA3["offending_commit"]
+        end
+        
+        CONS["consolidator<br/>(merge + decide)"]
         FIX["fix<br/>(Claude Opus)"]
-        VAL["validate<br/>(pytest)"]
+        VAL["validate<br/>(pytest + guards)"]
         DIFF["create_diff"]
     end
     
@@ -50,10 +58,14 @@ flowchart TB
     LOGS --> CW
     CC --> MCW & MXR
     RCA --> MCW & MXR & MAC
+    
+    RCA -.->|Send fan-out| SA1 & SA2 & SA3
+    SA1 & SA2 & SA3 -.->|merge| CONS
+    
     FIX --> MGH & MAC
     DIFF --> MGH
     
-    CC --> RCA --> CONS
+    CC --> RCA
     CONS --> FIX --> VAL
     VAL -->|retry| FIX
     VAL -->|success| DIFF
@@ -63,6 +75,7 @@ flowchart TB
     
     class Demo demo
     class Agent agent
+    class SA1,SA2,SA3 subagent
     class MCP mcp
     class AWS aws
 ```

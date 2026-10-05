@@ -170,22 +170,33 @@ Currently, mock mode returns hardcoded code. Make it dynamic:
 
 ---
 
-## Phase 3: RCA Node & LLM Integration
+## Phase 3: RCA Node, Subagent Fan-Out & LLM Integration
 
-**Goal**: Understand root cause analysis with Claude.
+**Goal**: Understand root cause analysis with parallel subagents.
 
 ### What to Read
 
-1. `agent/nodes/classify_rca.py` - RCA with LLM
-2. `agent/nodes/consolidator.py` - Decision making
-3. `skills/python-keyerror.md` - How skills guide RCA
-4. `agent/config.py` - Model selection and turn caps
+1. `agent/nodes/classify_rca.py` - Primary RCA with LLM
+2. `agent/nodes/subagents/` - Parallel subagent implementations:
+   - `breadcrumbs.py` - Log timeline analysis
+   - `flag_correlation.py` - Feature flag correlation
+   - `offending_commit.py` - Git blame and commit search
+3. `agent/nodes/consolidator.py` - Subagent result merging and decisions
+4. `agent/graph.py` - LangGraph Send fan-out pattern
+5. `agent/state.py` - State merging with Annotated
+6. `skills/python-keyerror.md` - How skills guide RCA
+7. `tests/test_agent_graph.py` - Subagent tests
 
 ### Key Concepts
 
+- **Parallel execution with Send**: LangGraph's dynamic fan-out
+- **Subagent specialization**: Each analyzes a different aspect
+- **State merging**: Annotated types for concurrent updates
 - **Structured output**: Why RCAResult is typed
-- **Turn caps**: Uber's main guardrail (20 turns for RCA)
-- **Confidence scores**: When to escalate vs. proceed
+- **Turn caps**: Each subagent has its own turn limit (5 turns)
+- **Confidence scores**: Each subagent produces its own confidence
+- **Agreement detection**: Consolidator checks if subagents agree
+- **Escalation with evidence**: When to give up and escalate to human
 - **Skills loading**: How domain knowledge helps the LLM
 
 ### Uber's Architecture
@@ -194,52 +205,75 @@ Currently, mock mode returns hardcoded code. Make it dynamic:
 classify_rca (Claude Sonnet, 20 turns)
   ├── Queries: jaeger, logging, crash-analytics MCP
   ├── Loads: agent_type-filtered skills
-  ├── Outputs: Structured XML (category, confidence, root_cause)
-  └── Fans out to ~30 parallel subagents (breadcrumbs, release correlation, etc.)
+  ├── Outputs: Primary RCA with confidence
+  └── Triggers fan-out via Send
+        ↓ ↓ ↓
+  [~30 parallel subagents]
+    - breadcrumbs: session timeline
+    - flag_correlation: release correlation
+    - offending_commit: git blame
+    - ... (27 more at Uber)
+        ↓ ↓ ↓
+  consolidator
+    ├── Merge results (weighted average confidence)
+    ├── Check agreement (variance in confidence)
+    ├── If disagree/low confidence:
+    │   └── Retry weakest subagent (once)
+    │   └── Escalate with evidence packet
+    └── If agree: proceed to fix
 ```
 
 ### Exercises
 
-**Exercise 3.1**: Run real RCA (requires Bedrock access)
+**Exercise 3.1**: Trace the subagent fan-out
 
 ```bash
-# Set AWS credentials
-export AWS_REGION=us-east-1
+# Run agent with logging
+python -m agent.cli --mode mock --issue tests/fixtures/keyerror_issue.yaml
 
-# Run in real mode
-python -m agent.cli --mode aws --issue tests/fixtures/keyerror_issue.yaml
+# Watch for:
+# - "Fanning out to 3 parallel subagents"
+# - Each subagent running
+# - "Consolidating RCA + 3 subagent results"
+# - Confidence and agreement scores
 ```
 
-Watch the LLM turns in the logs!
+**Exercise 3.2**: Test the disagreement path
 
-**Exercise 3.2**: Adjust confidence threshold
+Run the test that simulates subagent disagreement:
 
-In `consolidator.py`, the threshold is 0.7:
+```bash
+pytest tests/test_agent_graph.py::TestSubagentFanOut::test_subagents_disagree_low_confidence -v
+```
+
+See how the consolidator escalates with an evidence packet.
+
+**Exercise 3.3**: Add a fourth subagent
+
+Create `agent/nodes/subagents/dependency_checker.py`:
 
 ```python
-CONFIDENCE_THRESHOLD = 0.7
+def dependency_checker_subagent(state_dict: dict, config: AgentConfig) -> dict:
+    # Check if issue relates to dependency versions
+    ...
+    return {"subagent_results": {"dependency": result}}
 ```
 
-Try changing it to 0.5 or 0.9. How does it affect escalation?
+Wire it into the graph in `_fan_out_to_subagents()`.
 
-**Exercise 3.3**: Add a new skill
+**Exercise 3.4**: Adjust confidence threshold
 
-Create `skills/python-typeerror.md`:
+In `consolidator.py`, the threshold is 0.7. Change it to 0.5 or 0.9 and see how it affects escalation.
 
-```markdown
-# Python TypeError Pattern
+**Exercise 3.5**: Implement subagent retry
 
-**Category**: bug-pattern
+The consolidator identifies the weakest subagent but doesn't actually retry it. Implement the retry logic:
 
-## Detection
-- Exception type: TypeError
-- Common causes: Wrong argument types, None where object expected
-
-## Fix Patterns
-...
+```python
+def _retry_weakest_subagent(state, weakest_name, config):
+    # Re-run the weakest subagent
+    ...
 ```
-
-Load it in `classify_rca_node()` and see if it helps.
 
 ### Things to Try
 

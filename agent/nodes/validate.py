@@ -121,8 +121,9 @@ def _check_symptom_hiding(state: AgentState) -> list[str]:
     - Broad try/except that swallows errors
     - Defensive checks that hide the real issue
     - Returning default values without logging
+    - Adding try/except: pass (silent failure)
     
-    This is a simplified check for learning.
+    This prevents patches that mask errors instead of fixing them.
     """
     issues = []
     
@@ -131,19 +132,66 @@ def _check_symptom_hiding(state: AgentState) -> list[str]:
     
     for change in state.fix_result.changes:
         diff = change.get("diff", "")
+        file_path = change.get("file", "unknown")
         
-        # Check for overly broad exception handling
-        if "except:" in diff or "except Exception:" in diff:
-            # Make sure there's proper logging or re-raise
-            if "logger" not in diff and "raise" not in diff:
-                issues.append(
-                    f"File {change['file']}: Broad exception handling without logging"
-                )
+        # Split diff into added lines (start with +)
+        added_lines = [
+            line[1:].strip() 
+            for line in diff.split('\n') 
+            if line.startswith('+') and not line.startswith('+++')
+        ]
         
-        # Check for silent failures
-        if "pass" in diff and "#" not in diff:
-            issues.append(
-                f"File {change['file']}: Silent failure (pass without comment/logging)"
-            )
+        # Check 1: Bare except: or except Exception: without handling
+        for i, line in enumerate(added_lines):
+            if "except:" in line or "except Exception:" in line:
+                # Look ahead for proper handling in next few lines
+                next_lines = added_lines[i+1:i+5] if i+1 < len(added_lines) else []
+                has_logging = any("log" in l.lower() for l in next_lines)
+                has_raise = any("raise" in l for l in next_lines)
+                has_pass = any(l.strip() == "pass" for l in next_lines)
+                
+                if has_pass and not has_logging:
+                    issues.append(
+                        f"File {file_path}: Symptom hiding - 'try/except: pass' "
+                        f"swallows errors without logging. This masks the real issue."
+                    )
+                elif not has_logging and not has_raise:
+                    issues.append(
+                        f"File {file_path}: Broad exception handling without logging or re-raise"
+                    )
+        
+        # Check 2: Silent pass statements added (without comment)
+        for line in added_lines:
+            if line.strip() == "pass" or line.endswith("pass"):
+                # Check if there's a comment explaining it
+                if "#" not in line:
+                    issues.append(
+                        f"File {file_path}: Silent 'pass' without explanation"
+                    )
+        
+        # Check 3: Returning None/default without investigation
+        for i, line in enumerate(added_lines):
+            if "return None" in line or "return ''" in line or "return []" in line:
+                prev_lines = added_lines[max(0, i-3):i]
+                # If returning default after except without logging, flag it
+                if any("except" in l for l in prev_lines):
+                    has_logging = any("log" in l.lower() for l in prev_lines)
+                    if not has_logging:
+                        issues.append(
+                            f"File {file_path}: Returning default value after exception "
+                            f"without logging root cause"
+                        )
+        
+        # Check 4: Overly defensive conditionals that mask bugs
+        # E.g., wrapping entire function in try/except
+        if "try:" in diff:
+            lines_with_try = [i for i, line in enumerate(added_lines) if "try:" in line]
+            for try_idx in lines_with_try:
+                # Check if function definition is right before try
+                if try_idx > 0 and "def " in added_lines[try_idx - 1]:
+                    issues.append(
+                        f"File {file_path}: Wrapping entire function in try/except "
+                        f"masks specific error location"
+                    )
     
     return issues
