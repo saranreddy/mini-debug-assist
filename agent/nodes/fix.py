@@ -10,6 +10,7 @@ Maps to Uber's fix node:
 Uber uses Claude Opus (more capable) with higher turn cap.
 """
 
+import json
 import logging
 from typing import Any
 
@@ -21,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 def _format_code_context(code_context: dict[str, str] | None) -> str:
     """Format code context for LLM prompt."""
-    import json
     if not code_context:
         return "No code context"
     truncated = {k: v[:1000] + "..." for k, v in code_context.items()}
@@ -118,8 +118,6 @@ def _generate_fix_with_llm(state: AgentState, config: AgentConfig) -> tuple[FixR
     3. Applies to temp checkout for validation
     4. Returns FixResult with real diffs
     """
-    import json
-
     from agent.llm import invoke_with_tools
 
     # Build system prompt
@@ -172,7 +170,7 @@ Code Context:
 {_format_code_context(state.code_context)}
 {previous_attempts_text}
 
-Generate a fix for this issue.{" **Learn from previous failures above.**" if state.fix_history else ""}"""
+Generate a fix for this issue.{" **Learn from previous failures.**" if state.fix_history else ""}"""
 
     messages = [
         {

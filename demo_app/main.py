@@ -48,7 +48,6 @@ USE_XRAY = config.use_aws and True  # Enable if you have X-Ray daemon
 if USE_XRAY:
     try:
         from aws_xray_sdk.core import xray_recorder
-        from aws_xray_sdk.ext.flask.middleware import XRayMiddleware
 
         xray_recorder.configure(service="MiniDebugAssist-Demo")
         # Note: FastAPI support is limited, but this shows the pattern
