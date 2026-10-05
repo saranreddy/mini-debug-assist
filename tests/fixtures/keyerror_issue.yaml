@@ -1,0 +1,58 @@
+# Mock issue for testing agent in MOCK mode
+# Maps to Uber's Healthline crash report structure
+
+issue_id: "DEMO-001"
+title: "KeyError: 'email' in user endpoint"
+service: "mini-debug-assist-demo"
+environment: "production"
+severity: "P1"
+status: "open"
+
+# Crash details
+exception_type: "KeyError"
+exception_message: "'email'"
+stack_trace: |
+  Traceback (most recent call last):
+    File "/app/demo_app/main.py", line 156, in get_user
+      email = user["email"]
+  KeyError: 'email'
+
+# Context from logs (what context_collector would gather)
+recent_logs:
+  - timestamp: "2026-10-05T16:30:00Z"
+    level: "INFO"
+    message: "Fetching user 3"
+    path: "/user/3"
+    method: "GET"
+  
+  - timestamp: "2026-10-05T16:30:00.050Z"
+    level: "ERROR"
+    message: "Unhandled exception: 'email'"
+    exception_type: "KeyError"
+    exception_message: "'email'"
+    path: "/user/3"
+    method: "GET"
+
+# Breadcrumbs (user actions leading to crash)
+breadcrumbs:
+  - timestamp: "2026-10-05T16:29:50Z"
+    action: "GET /health"
+    result: "200 OK"
+  
+  - timestamp: "2026-10-05T16:29:55Z"
+    action: "GET /user/1"
+    result: "200 OK"
+  
+  - timestamp: "2026-10-05T16:30:00Z"
+    action: "GET /user/3"
+    result: "500 Internal Server Error"
+
+# Occurrence data
+occurrences: 42
+affected_users: 15
+first_seen: "2026-10-05T10:00:00Z"
+last_seen: "2026-10-05T16:30:00Z"
+
+# Version info
+app_version: "0.1.0"
+commit_sha: "abc123def456"

@@ -1,0 +1,31 @@
+escalated: false
+escalation_reason: null
+fix:
+  applied: true
+  changes:
+  - diff: "--- a/demo_app/main.py\n+++ b/demo_app/main.py\n@@ -153,7 +153,10 @@ async\
+      \ def get_user(user_id: str):\n     \n     user = USERS_DB[user_id]\n     \n\
+      -    # BUG: This assumes 'email' always exists\n-    email = user[\"email\"\
+      ]  # KeyError when user_id='3'\n+    # Fixed: Use .get() with default value\
+      \ to handle missing email field\n+    # This prevents KeyError when user data\
+      \ is incomplete\n+    email = user.get(\"email\", None)\n     \n     logger.info(f\"\
+      User {user_id} retrieved successfully\")\n"
+    file: demo_app/main.py
+  mitigation: null
+issue_id: DEMO-001
+issue_title: 'KeyError: ''email'' in user endpoint'
+pr_url: https://github.com/mock-org/mock-repo/pull/42
+rca:
+  category: code_bug
+  confidence: 0.95
+  requires_code_fix: true
+  root_cause: KeyError accessing user['email'] field. User data in USERS_DB is inconsistent
+    - user '3' has no 'email' field. The code assumes all users have an email, which
+    is not validated.
+  summary: The /user/{user_id} endpoint crashes with KeyError when accessing user
+    data that lacks the 'email' field. This is a data schema violation that should
+    be handled gracefully.
+validation:
+  attempts: 1
+  issues: []
+  passed: true

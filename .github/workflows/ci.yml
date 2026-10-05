@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, cursor/** ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    name: Lint & Format Check
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+    
+    - name: Run black (format check)
+      run: black --check demo_app agent mcp_servers tests
+    
+    - name: Run ruff (linter)
+      run: ruff check demo_app agent mcp_servers tests
+
+  test:
+    runs-on: ubuntu-latest
+    name: Run Tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+    
+    - name: Run pytest
+      run: |
+        pytest -v --cov=demo_app --cov=agent --cov=mcp_servers --cov-report=term-missing
+    
+    - name: Upload coverage
+      uses: codecov/codecov-action@v4
+      if: always()
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        fail_ci_if_error: false
+
+  mock-e2e:
+    runs-on: ubuntu-latest
+    name: Mock End-to-End Test
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+    
+    - name: Run agent in mock mode
+      run: |
+        python -m agent.cli --mode mock --issue tests/fixtures/keyerror_issue.yaml --output output
+    
+    - name: Check output
+      run: |
+        # Verify output file was created
+        if [ ! -f "output/DEMO-001_result.yaml" ]; then
+          echo "Error: Output file not created"
+          exit 1
+        fi
+        
+        # Show the output
+        echo "=== Agent Output ==="
+        cat output/DEMO-001_result.yaml
+        echo "==================="
+        
+        # Verify RCA was performed
+        if ! grep -q "rca:" output/DEMO-001_result.yaml; then
+          echo "Error: No RCA in output"
+          exit 1
+        fi
+        
+        echo "✓ Mock end-to-end test passed"
+    
+    - name: Upload output artifact
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: agent-output
+        path: output/
+
+  cdk-synth:
+    runs-on: ubuntu-latest
+    name: CDK Synth Check
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Set up Node.js (for CDK)
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    
+    - name: Install AWS CDK
+      run: npm install -g aws-cdk
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[infra]"
+    
+    - name: CDK synth
+      run: |
+        cd infra
+        cdk synth --no-version-reporting
+    
+    - name: Check CloudFormation templates
+      run: |
+        # Verify templates were generated
+        if [ ! -d "infra/cdk.out" ]; then
+          echo "Error: CDK output directory not created"
+          exit 1
+        fi
+        
+        # Count templates
+        template_count=$(find infra/cdk.out -name "*.template.json" | wc -l)
+        echo "Generated $template_count CloudFormation templates"
+        
+        if [ "$template_count" -lt 3 ]; then
+          echo "Error: Expected at least 3 templates (demo, agent, observability)"
+          exit 1
+        fi
+        
+        echo "✓ CDK synth successful"
+
+  all-checks:
+    runs-on: ubuntu-latest
+    name: All Checks Passed
+    needs: [lint, test, mock-e2e, cdk-synth]
+    
+    steps:
+    - name: Success
+      run: |
+        echo "✅ All CI checks passed!"
+        echo ""
+        echo "✓ Linting (black, ruff)"
+        echo "✓ Tests (pytest with coverage)"
+        echo "✓ Mock end-to-end run"
+        echo "✓ CDK synth"
