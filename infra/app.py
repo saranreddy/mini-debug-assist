@@ -11,6 +11,9 @@ Defines infrastructure:
 - IAM roles with least privilege
 
 Maps to Uber's deployment (Kubernetes + runtime jobs)
+
+Note: Stacks are environment-agnostic when no AWS credentials are present,
+allowing `cdk synth` to work without authentication.
 """
 
 import aws_cdk as cdk
