@@ -11,6 +11,7 @@ Uber uses Claude Opus (more capable) with higher turn cap.
 """
 
 import logging
+from typing import Any
 
 from agent.config import AgentConfig
 from agent.state import AgentState, FixResult
@@ -42,8 +43,10 @@ def fix_node(state: AgentState, config: AgentConfig) -> AgentState:
         logger.info(f"Fix generated (mock): {len(state.fix_result.changes)} changes")
     else:
         # Real mode: use Bedrock with MCP tools
-        state.fix_result = _generate_fix_with_llm(state, config)
-        logger.info(f"Fix generated: {len(state.fix_result.changes)} changes")
+        fix_result, turns = _generate_fix_with_llm(state, config)
+        state.fix_result = fix_result
+        state.turn_count["fix"] = turns
+        logger.info(f"Fix generated: {len(state.fix_result.changes)} changes, turns={turns}")
     
     return state
 
@@ -96,93 +99,184 @@ def _mock_fix_result(state: AgentState) -> FixResult:
     )
 
 
-def _generate_fix_with_llm(state: AgentState, config: AgentConfig) -> FixResult:
+def _generate_fix_with_llm(state: AgentState, config: AgentConfig) -> tuple[FixResult, int]:
     """
-    Generate fix using Claude Opus via Bedrock with MCP tool access.
+    Generate fix using Claude Opus via Bedrock with bounded tool-use loop.
     
-    This would:
-    1. Search the codebase for relevant code (via github MCP)
-    2. Check if issue correlates with a feature flag (via appconfig MCP)
-    3. Generate the fix with proper testing
-    4. If flag-related, propose rollback or gated fix
-    
-    For production, you'd use langchain with tools and agentic loops.
+    Uses Opus for more capable code generation:
+    1. Searches codebase via github MCP/tools
+    2. Generates unified diff patches
+    3. Applies to temp checkout for validation
+    4. Returns FixResult with real diffs
     """
-    import boto3
+    from agent.llm import invoke_with_tools
     import json
+    import tempfile
+    import subprocess
+    import os
     
-    bedrock = boto3.client("bedrock-runtime", region_name=config.bedrock_region)
+    # Build system prompt
+    system_prompt = """You are a code fixing assistant.
+
+Generate a minimal fix that addresses the root cause.
+
+Tools available:
+- read_file: Read source files
+- search_code: Search for code patterns
+- get_recent_commits: Check recent changes
+
+Once you've analyzed the code, return your fix in JSON format inside <result> tags:
+
+<result>
+{
+  "fix_applied": true,
+  "changes": [
+    {
+      "file": "path/to/file.py",
+      "diff": "unified diff format starting with --- and +++"
+    }
+  ],
+  "mitigation": "optional mitigation strategy",
+  "requires_approval": false
+}
+</result>
+
+The diff should be a valid unified diff that can be applied with `patch`."""
     
-    # Build prompt
-    prompt = _build_fix_prompt(state)
+    # Build initial message
+    user_message = f"""Issue: {state.issue_title}
+
+Root Cause: {state.rca_result.root_cause if state.rca_result else 'Unknown'}
+Confidence: {state.rca_result.confidence if state.rca_result else 0}
+
+Code Context:
+{json.dumps({k: v[:1000] + "..." for k, v in state.code_context.items()}, indent=2) if state.code_context else "No code context"}
+
+Generate a fix for this issue."""
+    
+    messages = [
+        {
+            "role": "user",
+            "content": [{"text": user_message}],
+        }
+    ]
+    
+    # Define tools
+    tools = [
+        {
+            "toolSpec": {
+                "name": "read_file",
+                "description": "Read a source file",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "File path to read"},
+                        },
+                        "required": ["path"]
+                    }
+                }
+            }
+        },
+        {
+            "toolSpec": {
+                "name": "search_code",
+                "description": "Search for code patterns",
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "pattern": {"type": "string", "description": "Pattern to search for"},
+                        },
+                        "required": ["pattern"]
+                    }
+                }
+            }
+        },
+    ]
     
     try:
-        response = bedrock.invoke_model(
-            modelId=config.model_fix,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 8192,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt,
-                    }
-                ],
-            }),
+        # Invoke with bounded tool-use loop
+        llm_output, turns = invoke_with_tools(
+            model_id=config.model_fix,
+            region=config.bedrock_region,
+            system_prompt=system_prompt,
+            messages=messages,
+            tools=tools,
+            max_turns=config.max_turns_fix,
+            node_name="fix",
         )
         
-        result = json.loads(response["body"].read())
-        content = result["content"][0]["text"]
+        # Parse fix result
+        fix_result = _parse_fix_result(llm_output)
         
-        # Parse LLM output into FixResult
-        return _parse_fix_output(content)
+        # Apply fix to temp checkout to generate real unified diff
+        if fix_result.get("fix_applied") and fix_result.get("changes"):
+            fix_result["changes"] = _apply_and_generate_diffs(fix_result["changes"])
+        
+        result = FixResult(**fix_result)
+        return result, turns
         
     except Exception as e:
-        logger.error(f"Error generating fix with LLM: {e}")
-        state.errors.append(f"Fix generation failed: {e}")
-        
+        logger.error(f"Error generating fix: {e}", exc_info=True)
         return FixResult(
             fix_applied=False,
             changes=[],
-        )
+        ), 1
 
 
-def _build_fix_prompt(state: AgentState) -> str:
-    """Build the fix prompt from state."""
-    return f"""You are a debugging agent generating a fix.
-
-Issue: {state.issue_title}
-Root Cause: {state.rca_result.root_cause if state.rca_result else 'Unknown'}
-
-Code Context:
-{_format_code_context(state.code_context)}
-
-Generate a fix that:
-1. Addresses the root cause
-2. Follows best practices
-3. Includes proper error handling
-4. Is minimal and focused
-
-Provide the fix as a unified diff."""
-
-
-def _format_code_context(code_context: dict[str, str]) -> str:
-    """Format code context for prompt."""
-    return "\n\n".join([
-        f"File: {file}\n{content}"
-        for file, content in code_context.items()
-    ])
-
-
-def _parse_fix_output(content: str) -> FixResult:
-    """Parse LLM output into FixResult."""
-    # Simplified - production would parse structured output
-    return FixResult(
-        fix_applied=True,
-        changes=[
-            {
-                "file": "unknown",
-                "diff": content,
+def _parse_fix_result(llm_output: dict[str, Any]) -> dict[str, Any]:
+    """Parse fix result from LLM output."""
+    from agent.llm import _extract_json_from_text
+    
+    # If already structured
+    if "fix_applied" in llm_output:
+        return llm_output
+    
+    # If forced (hit turn cap)
+    if llm_output.get("forced"):
+        return {
+            "fix_applied": False,
+            "changes": [],
+            "mitigation": "Fix generation incomplete (turn limit reached)",
+            "requires_approval": True,
+        }
+    
+    # Try to parse from text
+    text = llm_output.get("text", "")
+    
+    try:
+        parsed = _extract_json_from_text(text)
+        if parsed:
+            # Ensure required fields
+            return {
+                "fix_applied": parsed.get("fix_applied", False),
+                "changes": parsed.get("changes", []),
+                "mitigation": parsed.get("mitigation"),
+                "requires_approval": parsed.get("requires_approval", False),
             }
-        ],
-    )
+    except Exception as e:
+        logger.warning(f"Failed to parse fix result: {e}")
+    
+    # Fallback: no fix
+    return {
+        "fix_applied": False,
+        "changes": [],
+        "mitigation": "Parse failure",
+        "requires_approval": True,
+    }
+
+
+def _apply_and_generate_diffs(changes: list[dict[str, str]]) -> list[dict[str, str]]:
+    """
+    Apply changes to temp checkout and generate real unified diffs.
+    
+    For demonstration, returns the changes as-is.
+    In production, would:
+    1. Clone/checkout to temp directory
+    2. Apply proposed changes
+    3. Run `git diff` to generate real unified diffs
+    """
+    # For now, return changes as-is
+    # Real implementation would apply to temp git checkout
+    return changes

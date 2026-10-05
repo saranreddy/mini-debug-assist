@@ -137,15 +137,14 @@ def invoke_with_tools(
 
 def _execute_tools(content_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
-    Execute tool use requests.
+    Execute tool use requests via MCP.
     
-    In production, this would:
-    1. Parse tool_use blocks
-    2. Call MCP servers or local tools
-    3. Return results
-    
-    For now, returns mock results for demonstration.
+    Calls tools through the MCP client, which manages server lifecycle
+    and tool execution.
     """
+    from agent.mcp_client import get_mcp_client
+    
+    mcp_client = get_mcp_client()
     tool_results = []
     
     for block in content_blocks:
@@ -157,19 +156,41 @@ def _execute_tools(content_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]
             
             logger.info(f"Executing tool: {tool_name} with input: {tool_input}")
             
-            # Mock tool execution
-            # In production, this would call MCP servers
-            result_content = {
-                "type": "text",
-                "text": f"Tool {tool_name} executed successfully (mock result)"
-            }
-            
-            tool_results.append({
-                "toolResult": {
-                    "toolUseId": tool_use_id,
-                    "content": [result_content]
+            try:
+                # Call tool via MCP
+                result = mcp_client.call_tool(tool_name, tool_input)
+                
+                # Format result for Bedrock
+                result_text = json.dumps(result, indent=2)
+                result_content = {
+                    "type": "text",
+                    "text": result_text
                 }
-            })
+                
+                tool_results.append({
+                    "toolResult": {
+                        "toolUseId": tool_use_id,
+                        "content": [result_content]
+                    }
+                })
+                
+            except Exception as e:
+                logger.error(f"Error executing tool {tool_name}: {e}")
+                # Return error result
+                error_content = {
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": str(e),
+                        "success": False
+                    })
+                }
+                tool_results.append({
+                    "toolResult": {
+                        "toolUseId": tool_use_id,
+                        "content": [error_content],
+                        "status": "error"
+                    }
+                })
     
     return tool_results
 

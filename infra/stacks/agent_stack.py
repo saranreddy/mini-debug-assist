@@ -74,7 +74,11 @@ class AgentStack(Stack):
             description="IAM role for debug agent with least-privilege access",
         )
 
-        # Bedrock InvokeModel permission (matches configured model IDs including inference profiles)
+        # Bedrock permissions (matches model IDs in agent/config.py)
+        # Model IDs from: https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html
+        # - Claude 3.5 Sonnet v2: anthropic.claude-3-5-sonnet-20241022-v2:0
+        # - Claude 3 Opus: anthropic.claude-3-opus-20240229-v1:0
+        # - Cross-region profiles: us.{model-id}
         self.agent_role.add_to_policy(
             iam.PolicyStatement(
                 sid="BedrockInvokeModel",
@@ -83,12 +87,12 @@ class AgentStack(Stack):
                     "bedrock:InvokeModelWithResponseStream",
                 ],
                 resources=[
-                    # Cross-region inference profiles (us.*)
+                    # Cross-region inference profiles
                     f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-5-opus-20250219-v1:0",
+                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-opus-20240229-v1:0",
                     # Direct model access
                     f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-5-opus-20250219-v1:0",
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-opus-20240229-v1:0",
                     # Wildcard for flexibility
                     f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-*",
                     f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-*",
