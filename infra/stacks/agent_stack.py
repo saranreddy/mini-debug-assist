@@ -75,10 +75,12 @@ class AgentStack(Stack):
         )
 
         # Bedrock permissions (matches model IDs in agent/config.py)
-        # Model IDs from: https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html
-        # - Claude 3.5 Sonnet v2: anthropic.claude-3-5-sonnet-20241022-v2:0
-        # - Claude 3 Opus: anthropic.claude-3-opus-20240229-v1:0
-        # - Cross-region profiles: us.{model-id}
+        # Model IDs from: 
+        # - https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5-5.html
+        # - https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-5.html
+        # - Claude Sonnet 5.5 (latest): anthropic.claude-sonnet-5-5
+        # - Claude Opus 5.5 (latest): anthropic.claude-opus-5-5
+        # - Cross-region profiles: us./eu./au./global. prefixes
         self.agent_role.add_to_policy(
             iam.PolicyStatement(
                 sid="BedrockInvokeModel",
@@ -87,15 +89,18 @@ class AgentStack(Stack):
                     "bedrock:InvokeModelWithResponseStream",
                 ],
                 resources=[
-                    # Cross-region inference profiles
-                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-opus-20240229-v1:0",
+                    # Cross-region inference profiles for Claude 5 generation
+                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-sonnet-5-5",
+                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-opus-5-5",
+                    f"arn:aws:bedrock:{self.region}::inference-profile/global.anthropic.claude-sonnet-5-5",
+                    f"arn:aws:bedrock:{self.region}::inference-profile/global.anthropic.claude-opus-5-5",
                     # Direct model access
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0",
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-opus-20240229-v1:0",
-                    # Wildcard for flexibility
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-*",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-3-*",
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-sonnet-5-5",
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-opus-5-5",
+                    # Wildcard for flexibility (supports Claude 4.x, 5.x)
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-*",
+                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-*",
+                    f"arn:aws:bedrock:{self.region}::inference-profile/global.anthropic.claude-*",
                 ],
             )
         )

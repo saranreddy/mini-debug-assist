@@ -27,22 +27,26 @@ class AgentConfig:
     # Model configuration (maps to Uber's per-node model assignments)
     # In MOCK mode, these are ignored and fixture responses are used
     # 
-    # Model IDs from: https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html
-    # As of Oct 2026:
-    # - Claude 3.5 Sonnet v2 (latest): anthropic.claude-3-5-sonnet-20241022-v2:0
-    # - Claude 3 Opus (latest available Opus): anthropic.claude-3-opus-20240229-v1:0
-    # - Cross-region inference profiles: us.{model-id}
+    # Model IDs from AWS Bedrock documentation:
+    # - https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5-5.html
+    # - https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-5.html
+    # - https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
+    # 
+    # As of Oct 2026 (from Project Glasswing / Claude 5 generation):
+    # - Claude Sonnet 5.5 (latest Sonnet): anthropic.claude-sonnet-5-5
+    # - Claude Opus 5.5 (latest Opus): anthropic.claude-opus-5-5
+    # - Cross-region inference profiles: us./eu./au./global. prefixes for geo routing
     #
     bedrock_region: str = "us-east-1"
-    # Sonnet for classify, subagents, validate, create_diff (fast, cost-effective)
-    model_classify: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
-    model_subagent: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
-    model_validate: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
-    model_create_diff: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
-    # Opus for fix (more capable for complex code changes)
-    model_fix: str = "us.anthropic.claude-3-opus-20240229-v1:0"
+    # Sonnet 5.5 for classify, subagents, validate, create_diff (fast, cost-effective)
+    model_classify: str = "us.anthropic.claude-sonnet-5-5"
+    model_subagent: str = "us.anthropic.claude-sonnet-5-5"
+    model_validate: str = "us.anthropic.claude-sonnet-5-5"
+    model_create_diff: str = "us.anthropic.claude-sonnet-5-5"
+    # Opus 5.5 for fix (more capable for complex code changes, with reasoning)
+    model_fix: str = "us.anthropic.claude-opus-5-5"
     # Escalation uses same Opus
-    model_escalate: str = "us.anthropic.claude-3-opus-20240229-v1:0"
+    model_escalate: str = "us.anthropic.claude-opus-5-5"
     
     # Turn caps (maps to Uber's max-turn guardrails)
     max_turns_classify: int = 20
@@ -71,27 +75,27 @@ class AgentConfig:
             bedrock_region=os.getenv("AWS_REGION", "us-east-1"),
             model_classify=os.getenv(
                 "MODEL_CLASSIFY",
-                "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+                "us.anthropic.claude-sonnet-5-5"
             ),
             model_subagent=os.getenv(
                 "MODEL_SUBAGENT",
-                "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+                "us.anthropic.claude-sonnet-5-5"
             ),
             model_fix=os.getenv(
                 "MODEL_FIX",
-                "us.anthropic.claude-3-opus-20240229-v1:0"
+                "us.anthropic.claude-opus-5-5"
             ),
             model_validate=os.getenv(
                 "MODEL_VALIDATE",
-                "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+                "us.anthropic.claude-sonnet-5-5"
             ),
             model_create_diff=os.getenv(
                 "MODEL_CREATE_DIFF",
-                "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+                "us.anthropic.claude-sonnet-5-5"
             ),
             model_escalate=os.getenv(
                 "MODEL_ESCALATE",
-                "us.anthropic.claude-3-opus-20240229-v1:0"
+                "us.anthropic.claude-opus-5-5"
             ),
             github_token=os.getenv("GITHUB_TOKEN"),
             github_repo=os.getenv("GITHUB_REPO"),

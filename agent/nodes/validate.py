@@ -66,71 +66,175 @@ def _run_tests(state: AgentState, config: AgentConfig) -> ValidationResult:
     """
     Actually run pytest to validate the fix.
     
-    1. Apply the fix to a temp copy of the repo
-    2. Run pytest in that temp directory
-    3. Parse test output
-    4. Check for symptom-hiding patterns
-    5. Store failure in fix_history if tests fail
+    1. Copy repo (demo_app + tests) to a temp directory
+    2. Apply the diff using git apply or patch -p1
+    3. Run pytest in that temp directory
+    4. Parse test output
+    5. Check for symptom-hiding patterns
+    6. Store failure in fix_history if tests fail
     """
     import tempfile
     import shutil
     import os
     
+    temp_dir = None
+    
     try:
         # Create temp directory for testing
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Copy workspace to temp (or use current dir in simplified version)
-            # For now, apply patches to temp files
-            
-            # Apply diff if present
-            if state.fix_result and state.fix_result.changes:
-                for change in state.fix_result.changes:
-                    file_path = change.get("file", "")
-                    diff_content = change.get("diff", "")
+        temp_dir = tempfile.mkdtemp(prefix="debug-assist-validate-")
+        logger.info(f"Created temp directory: {temp_dir}")
+        
+        # Copy demo_app and tests to temp dir
+        workspace_root = os.getcwd()
+        
+        # Copy directories we need, ignoring .git, venv, __pycache__
+        def ignore_patterns(directory, files):
+            ignored = []
+            for f in files:
+                if f in ['.git', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', 'node_modules']:
+                    ignored.append(f)
+                elif f.endswith('.pyc') or f.endswith('.pyo'):
+                    ignored.append(f)
+            return ignored
+        
+        # Copy demo_app
+        demo_src = os.path.join(workspace_root, "demo_app")
+        demo_dst = os.path.join(temp_dir, "demo_app")
+        if os.path.exists(demo_src):
+            shutil.copytree(demo_src, demo_dst, ignore=ignore_patterns)
+            logger.info(f"Copied demo_app to {demo_dst}")
+        
+        # Copy tests
+        tests_src = os.path.join(workspace_root, "tests")
+        tests_dst = os.path.join(temp_dir, "tests")
+        if os.path.exists(tests_src):
+            shutil.copytree(tests_src, tests_dst, ignore=ignore_patterns)
+            logger.info(f"Copied tests to {tests_dst}")
+        
+        # Apply diff if present
+        apply_success = True
+        apply_error = ""
+        
+        if state.fix_result and state.fix_result.changes:
+            for change in state.fix_result.changes:
+                file_path = change.get("file", "")
+                diff_content = change.get("diff", "")
+                
+                if not diff_content:
+                    continue
+                
+                # Write diff to a temp file
+                diff_file = os.path.join(temp_dir, "fix.patch")
+                with open(diff_file, "w") as f:
+                    f.write(diff_content)
+                
+                logger.info(f"Applying diff to {file_path}")
+                
+                # Try git apply --check first
+                check_result = subprocess.run(
+                    ["git", "apply", "--check", diff_file],
+                    cwd=temp_dir,
+                    capture_output=True,
+                    text=True,
+                )
+                
+                if check_result.returncode == 0:
+                    # Apply patch with git apply
+                    apply_result = subprocess.run(
+                        ["git", "apply", diff_file],
+                        cwd=temp_dir,
+                        capture_output=True,
+                        text=True,
+                    )
                     
-                    # For demonstration, log the diff
-                    # Real implementation would apply patch
-                    logger.info(f"Would apply diff to {file_path}: {len(diff_content)} chars")
+                    if apply_result.returncode != 0:
+                        apply_success = False
+                        apply_error = f"git apply failed: {apply_result.stderr}"
+                        logger.error(apply_error)
+                        break
+                    else:
+                        logger.info(f"Successfully applied patch to {file_path}")
+                else:
+                    # Fallback to patch -p1
+                    logger.warning(f"git apply --check failed, trying patch -p1: {check_result.stderr}")
+                    patch_result = subprocess.run(
+                        ["patch", "-p1"],
+                        input=diff_content,
+                        cwd=temp_dir,
+                        capture_output=True,
+                        text=True,
+                    )
+                    
+                    if patch_result.returncode != 0:
+                        apply_success = False
+                        apply_error = f"patch -p1 failed: {patch_result.stderr}"
+                        logger.error(apply_error)
+                        break
+                    else:
+                        logger.info(f"Successfully applied patch (via patch -p1) to {file_path}")
+        
+        # If patch application failed, return early
+        if not apply_success:
+            issues = [f"Patch application failed: {apply_error}"]
             
-            # Run pytest in current directory (simplified)
-            # Real implementation would run in temp_dir
-            result = subprocess.run(
-                ["pytest", "-xvs", "--tb=short", "tests/"],
-                capture_output=True,
-                text=True,
-                timeout=300,  # 5 minute timeout
-            )
-            
-            passed = result.returncode == 0
-            test_output = result.stdout + result.stderr
-            
-            # Check for symptom-hiding patterns
-            issues = _check_symptom_hiding(state)
-            
-            if issues:
-                passed = False
-            
-            # If validation failed, store in fix_history for retry feedback
-            if not passed:
-                failure_entry = {
-                    "attempt": state.validation_attempts,
-                    "diff": "\n".join([
-                        c.get("diff", "") for c in (state.fix_result.changes if state.fix_result else [])
-                    ])[:1000],
-                    "test_output": test_output[:1000],
-                    "failure_reason": (
-                        "Tests failed" if result.returncode != 0 else f"Symptom hiding: {issues[0]}"
-                    ),
-                    "issues": issues,
-                }
-                state.fix_history.append(failure_entry)
-                logger.warning(f"Validation failed, stored in fix_history (attempt {state.validation_attempts})")
+            # Store in fix_history
+            failure_entry = {
+                "attempt": state.validation_attempts,
+                "diff": "\n".join([
+                    c.get("diff", "") for c in (state.fix_result.changes if state.fix_result else [])
+                ])[:1000],
+                "test_output": apply_error[:1000],
+                "failure_reason": "Patch did not apply cleanly",
+                "issues": issues,
+            }
+            state.fix_history.append(failure_entry)
             
             return ValidationResult(
-                passed=passed,
-                test_output=test_output,
+                passed=False,
+                test_output=apply_error,
                 issues=issues,
             )
+        
+        # Run pytest in temp directory
+        logger.info("Running pytest in temp directory")
+        result = subprocess.run(
+            ["pytest", "-xvs", "--tb=short", "tests/"],
+            cwd=temp_dir,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minute timeout
+        )
+        
+        passed = result.returncode == 0
+        test_output = result.stdout + result.stderr
+        
+        # Check for symptom-hiding patterns
+        issues = _check_symptom_hiding(state)
+        
+        if issues:
+            passed = False
+        
+        # If validation failed, store in fix_history for retry feedback
+        if not passed:
+            failure_entry = {
+                "attempt": state.validation_attempts,
+                "diff": "\n".join([
+                    c.get("diff", "") for c in (state.fix_result.changes if state.fix_result else [])
+                ])[:1000],
+                "test_output": test_output[:1000],
+                "failure_reason": (
+                    "Tests failed" if result.returncode != 0 else f"Symptom hiding: {issues[0]}"
+                ),
+                "issues": issues,
+            }
+            state.fix_history.append(failure_entry)
+            logger.warning(f"Validation failed, stored in fix_history (attempt {state.validation_attempts})")
+        
+        return ValidationResult(
+            passed=passed,
+            test_output=test_output,
+            issues=issues,
+        )
         
     except subprocess.TimeoutExpired:
         logger.error("Test execution timed out")
@@ -141,12 +245,21 @@ def _run_tests(state: AgentState, config: AgentConfig) -> ValidationResult:
         )
         
     except Exception as e:
-        logger.error(f"Error running tests: {e}")
+        logger.error(f"Error running tests: {e}", exc_info=True)
         return ValidationResult(
             passed=False,
             test_output=str(e),
             issues=[f"Test execution error: {e}"],
         )
+    
+    finally:
+        # Clean up temp directory
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+                logger.info(f"Cleaned up temp directory: {temp_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp directory {temp_dir}: {e}")
 
 
 def _check_symptom_hiding(state: AgentState) -> list[str]:

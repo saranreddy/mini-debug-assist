@@ -54,32 +54,19 @@ def _create_github_pr(state: AgentState, config: AgentConfig) -> Optional[str]:
     Create a GitHub pull request with real branch and commit.
     
     Steps:
-    1. Create a new branch
-    2. Apply the diff (commit changes)
-    3. Push the branch
-    4. Create PR via GitHub API
+    1. Create a new branch from base
+    2. Commit the file changes to the branch via GitHub API
+    3. Create PR via GitHub API
     """
     if not config.github_token or not config.github_repo:
         logger.warning("GitHub credentials not configured, skipping PR creation")
         return None
     
+    if not state.fix_result or not state.fix_result.changes:
+        logger.warning("No changes to commit, skipping PR creation")
+        return None
+    
     try:
-        import subprocess
-        import tempfile
-        import os
-        
-        # Branch name
-        branch_name = f"fix/debug-assist-{state.issue_id.lower()}"
-        
-        # For real implementation, would:
-        # 1. Clone repo to temp dir
-        # 2. Create branch
-        # 3. Apply diff
-        # 4. Commit
-        # 5. Push
-        # 6. Create PR
-        
-        # Simplified: use GitHub API directly
         from github import Github
         
         gh = Github(config.github_token)
@@ -89,6 +76,10 @@ def _create_github_pr(state: AgentState, config: AgentConfig) -> Optional[str]:
         default_branch = repo.default_branch
         base_sha = repo.get_branch(default_branch).commit.sha
         
+        # Branch name
+        branch_name = f"fix/debug-assist-{state.issue_id.lower()}"
+        logger.info(f"Creating branch {branch_name} from {default_branch} @ {base_sha[:8]}")
+        
         # Create new branch (via API)
         try:
             ref = repo.create_git_ref(
@@ -97,11 +88,122 @@ def _create_github_pr(state: AgentState, config: AgentConfig) -> Optional[str]:
             )
             logger.info(f"Created branch: {branch_name}")
         except Exception as e:
-            # Branch might already exist
+            # Branch might already exist, try to get it
             logger.warning(f"Branch creation failed (may exist): {e}")
+            try:
+                ref = repo.get_git_ref(f"heads/{branch_name}")
+                logger.info(f"Using existing branch: {branch_name}")
+            except Exception as e2:
+                logger.error(f"Failed to get existing branch: {e2}")
+                raise
         
-        # Apply changes to branch (simplified - in real impl would commit files)
-        # For demonstration, we'll create PR with existing branch or note in body
+        # Commit changes to the branch via GitHub API
+        # Using Git Database API: create blobs -> create tree -> create commit -> update ref
+        logger.info(f"Committing {len(state.fix_result.changes)} file changes to branch")
+        
+        # Get the base tree
+        base_commit = repo.get_git_commit(base_sha)
+        base_tree = base_commit.tree
+        
+        # Create new tree with file changes
+        tree_elements = []
+        
+        for change in state.fix_result.changes:
+            file_path = change.get("file", "")
+            diff_content = change.get("diff", "")
+            
+            if not file_path or not diff_content:
+                logger.warning(f"Skipping change with missing file or diff")
+                continue
+            
+            # Get current file content from base branch
+            try:
+                file_content = repo.get_contents(file_path, ref=default_branch)
+                current_content = file_content.decoded_content.decode("utf-8")
+            except Exception as e:
+                logger.warning(f"File {file_path} not found in base branch, assuming new file: {e}")
+                current_content = ""
+            
+            # Apply unified diff to get new content
+            # For simplicity, we'll use the patch command via subprocess
+            import tempfile
+            import subprocess
+            
+            with tempfile.TemporaryDirectory() as tmpdir:
+                # Write current content
+                current_file = f"{tmpdir}/current"
+                with open(current_file, "w") as f:
+                    f.write(current_content)
+                
+                # Write diff
+                diff_file = f"{tmpdir}/fix.patch"
+                with open(diff_file, "w") as f:
+                    f.write(diff_content)
+                
+                # Apply patch
+                patch_result = subprocess.run(
+                    ["patch", "-o", f"{tmpdir}/patched", current_file, diff_file],
+                    capture_output=True,
+                    text=True,
+                )
+                
+                if patch_result.returncode != 0:
+                    logger.warning(f"Patch failed for {file_path}, trying alternative method: {patch_result.stderr}")
+                    # Fallback: try patch stdin
+                    subprocess.run(
+                        ["cp", current_file, f"{tmpdir}/patched"],
+                        check=True
+                    )
+                    patch_result2 = subprocess.run(
+                        ["patch", f"{tmpdir}/patched"],
+                        input=diff_content,
+                        capture_output=True,
+                        text=True,
+                        cwd=tmpdir,
+                    )
+                    
+                    if patch_result2.returncode != 0:
+                        logger.error(f"Failed to apply patch for {file_path}: {patch_result2.stderr}")
+                        continue
+                
+                # Read patched content
+                with open(f"{tmpdir}/patched", "r") as f:
+                    new_content = f.read()
+            
+            # Create blob for new content
+            blob = repo.create_git_blob(new_content, "utf-8")
+            
+            # Add to tree elements
+            tree_elements.append(
+                {
+                    "path": file_path,
+                    "mode": "100644",  # Regular file
+                    "type": "blob",
+                    "sha": blob.sha,
+                }
+            )
+            logger.info(f"Created blob for {file_path}: {blob.sha[:8]}")
+        
+        if not tree_elements:
+            logger.error("No tree elements created, cannot commit")
+            return None
+        
+        # Create new tree
+        new_tree = repo.create_git_tree(tree_elements, base_tree)
+        logger.info(f"Created tree: {new_tree.sha[:8]}")
+        
+        # Create commit
+        commit_message = f"Fix {state.issue_id}: {state.issue_title}\n\nAutomated fix by Mini Debug Assist agent"
+        new_commit = repo.create_git_commit(
+            message=commit_message,
+            tree=new_tree,
+            parents=[base_commit],
+        )
+        logger.info(f"Created commit: {new_commit.sha[:8]}")
+        
+        # Update branch ref to point to new commit
+        ref.edit(sha=new_commit.sha, force=False)
+        logger.info(f"Updated branch {branch_name} to commit {new_commit.sha[:8]}")
         
         # Build PR title and body
         title = _build_pr_title(state)

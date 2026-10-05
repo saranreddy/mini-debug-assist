@@ -192,7 +192,7 @@ class TestE2ELocal:
         
         # Load mock issue
         from agent.cli import load_issue_from_file
-        issue_data = load_issue_from_file("fixtures/mock_issue_DEMO-001.yaml")
+        issue_data = load_issue_from_file("tests/fixtures/keyerror_issue.yaml")
         
         from agent.state import AgentState
         state = AgentState(
