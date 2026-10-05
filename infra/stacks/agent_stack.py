@@ -56,12 +56,12 @@ class AgentStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         # ===== GitHub Token Secret =====
-        # Store GitHub token in Secrets Manager
-        self.github_token_secret = secretsmanager.Secret(
+        # Import existing secret created by make setup-secrets
+        # The secret must be created before deploying with: make setup-secrets
+        self.github_token_secret = secretsmanager.Secret.from_secret_name_v2(
             self,
             "GitHubToken",
             secret_name="mini-debug-assist/github-token",
-            description="GitHub token for creating PRs",
         )
 
         # ===== DynamoDB Deduplication Table =====
@@ -213,6 +213,7 @@ class AgentStack(Stack):
         self.agent_task_def = ecs.FargateTaskDefinition(
             self,
             "AgentTaskDef",
+            family="mini-debug-assist-agent",
             cpu=512,
             memory_limit_mib=1024,
             task_role=self.agent_role,

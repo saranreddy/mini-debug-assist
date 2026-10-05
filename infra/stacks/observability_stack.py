@@ -68,10 +68,10 @@ class ObservabilityStack(Stack):
         self.error_alarm = cloudwatch.Alarm(
             self,
             "HighErrorRateAlarm",
-            alarm_name="MiniDebugAssist-HighErrorRate",
+            alarm_name="mini-debug-assist-error-alarm",
             alarm_description="Triggers when error rate is high (from structured logs)",
             metric=error_metric,
-            threshold=5,  # 5 errors in 5 minutes
+            threshold=10,  # 10 errors in 5 minutes
             evaluation_periods=1,
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,

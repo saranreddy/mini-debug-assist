@@ -32,7 +32,7 @@ This repo is for engineers learning about autonomous agents, AI-powered debuggin
 - Out-of-the-box multi-tenancy or enterprise auth (single-account demo)
 - Real mobile/simulator validation (Uber's Android/iOS validation path not included)
 
-**Cost note**: A short demo costs ~$1-5 for Fargate, Bedrock API calls, and AWS resources. Always run `make destroy` when done to avoid ongoing charges.
+**Cost note**: A short demo (5 investigations over 2 hours) costs ~$1-3 (primarily Bedrock API calls: $0.50-$2, plus minimal Fargate/networking). Always run `make destroy` when done to avoid ongoing charges.
 
 ## Architecture
 
@@ -75,13 +75,49 @@ This repo is for engineers learning about autonomous agents, AI-powered debuggin
 
 ### 1. Check Prerequisites
 
+Ensure you have:
+- **AWS CLI** configured (`aws configure`)
+- **AWS CDK** >= 2.150 (`npm install -g aws-cdk`)
+- **Docker** for building container images
+- **Python** 3.12+
+- **Node.js** 20+
+
+### 2. Request Bedrock Model Access
+
+Go to AWS Console → Bedrock → Model access and request access for:
+- `anthropic.claude-sonnet-5-5` (US East inference profile)
+- `anthropic.claude-opus-5-5` (US East inference profile)
+
+Wait for approval (usually instant).
+
+### 3. Fork and Clone
+
+Fork this repo to your own GitHub account:
+
+```bash
+# Clone your fork
+git clone https://github.com/YOUR-USERNAME/mini-debug-assist
+cd mini-debug-assist
+```
+
+The agent will open PRs in **your fork**, not the original repo.
+
+### 4. Configure AWS Credentials
+
+```bash
+aws configure
+# Enter your AWS Access Key ID, Secret Access Key, and region (us-east-1)
+```
+
+### 5. Verify Setup
+
 ```bash
 make doctor
 ```
 
-This checks AWS credentials, CDK, Docker, Python, and **Bedrock model access** for the configured Claude models. Fix any issues it reports.
+This checks AWS credentials, CDK, Docker, Python, and **Bedrock model access**. Fix any issues it reports.
 
-### 2. Run Locally in Mock Mode
+### 6. Test Locally (Optional)
 
 Test the full pipeline with no AWS costs:
 
@@ -89,17 +125,11 @@ Test the full pipeline with no AWS costs:
 make demo-local
 ```
 
-This runs the agent in mock mode using test fixtures (`tests/fixtures/keyerror_issue.yaml`), simulating all AWS calls.
+This runs the agent in mock mode using test fixtures, simulating all AWS calls.
 
-### 3. Fork and Configure
-
-Fork this repo to your own GitHub account, then store your credentials:
+### 7. Configure GitHub Token
 
 ```bash
-# Clone your fork
-git clone https://github.com/YOUR-USERNAME/mini-debug-assist
-cd mini-debug-assist
-
 # Copy environment template
 cp .env.example .env
 
@@ -112,9 +142,7 @@ cp .env.example .env
 make setup-secrets
 ```
 
-The agent will open PRs in **your fork**, not the original repo.
-
-### 4. Bootstrap CDK (One-Time)
+### 8. Bootstrap CDK (One-Time)
 
 ```bash
 make bootstrap
@@ -122,7 +150,7 @@ make bootstrap
 
 This provisions CDK resources in your AWS account (S3 bucket for assets, IAM roles). Only needed once per account/region.
 
-### 5. Deploy Infrastructure
+### 9. Deploy Infrastructure
 
 ```bash
 make deploy
@@ -136,7 +164,7 @@ This provisions (~5 minutes):
 - DynamoDB deduplication table
 - IAM roles with least privilege
 
-### 6. Verify Deployment
+### 10. Verify Deployment
 
 ```bash
 make smoke
@@ -149,7 +177,7 @@ This checks:
 - DynamoDB table is active
 - ECS task definition exists
 
-### 7. Trigger a Bug
+### 11. Trigger a Bug
 
 ```bash
 make trigger-bug
@@ -170,7 +198,7 @@ Watch for a PR in your fork on GitHub. The PR will include:
 - Test validation results
 - Link to the issue/alarm
 
-### 8. Tear Down
+### 12. Tear Down
 
 ```bash
 make destroy
@@ -193,7 +221,7 @@ Designed to stay within Free Tier limits or cost a few dollars for a short demo:
 - **DynamoDB**: On-demand pricing, first 25 RCU/WCU per month free (negligible for demo)
 - **EventBridge**: First 60M custom events/month to Lambda/ECS free (negligible for demo)
 
-**Estimated total cost for 5 investigations over 2 hours: $1-3**
+**Estimated total cost for 5 investigations over 2 hours: $1-3** (primarily Bedrock API calls + minimal compute/storage)
 
 **Note**: The demo deploys to public subnets with no NAT Gateway, minimizing networking costs. Fargate tasks get outbound internet via Internet Gateway (free).
 

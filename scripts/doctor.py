@@ -119,38 +119,26 @@ def main():
     # Node.js
     ok, msg = check_command(["node", "--version"], "Node.js", "https://nodejs.org/")
     checks.append((ok, msg))
-    if ok:
-        print(f"✅ Node.js {msg}")
-    else:
-        print(msg)
+    print(msg if not ok else f"✅ Node.js: {msg}")
 
     # CDK
     ok, msg = check_command(["cdk", "--version"], "AWS CDK", "npm install -g aws-cdk")
     checks.append((ok, msg))
-    if ok:
-        print(f"✅ AWS CDK {msg}")
-    else:
-        print(msg)
+    print(msg if not ok else f"✅ AWS CDK: {msg}")
 
     # Docker
     ok, msg = check_command(
         ["docker", "--version"], "Docker", "https://docs.docker.com/get-docker/"
     )
     checks.append((ok, msg))
-    if ok:
-        print(f"✅ Docker {msg}")
-    else:
-        print(msg)
+    print(msg if not ok else f"✅ Docker: {msg}")
 
     # Python
     ok, msg = check_command(
         [sys.executable, "--version"], "Python", "https://www.python.org/downloads/"
     )
     checks.append((ok, msg))
-    if ok:
-        print(f"✅ Python {msg}")
-    else:
-        print(msg)
+    print(msg if not ok else f"✅ Python: {msg}")
 
     # Python dependencies
     try:

@@ -23,7 +23,7 @@ def get_demo_app_url():
                 "cloudformation",
                 "describe-stacks",
                 "--stack-name",
-                "MiniDebugAssist-DemoAppStack",
+                "MiniDebugAssist-DemoApp",
             ],
             capture_output=True,
             text=True,
@@ -76,7 +76,7 @@ def trigger_errors(url, count=12):
 
 
 def get_agent_task_arn():
-    """Get the agent ECS task ARN (if running)."""
+    """Get the agent ECS task ARN (if running or recently ran)."""
     try:
         result = subprocess.run(
             [
@@ -85,8 +85,10 @@ def get_agent_task_arn():
                 "list-tasks",
                 "--cluster",
                 "mini-debug-assist-cluster",
-                "--service-name",
+                "--family",
                 "mini-debug-assist-agent",
+                "--desired-status",
+                "RUNNING",
             ],
             capture_output=True,
             text=True,

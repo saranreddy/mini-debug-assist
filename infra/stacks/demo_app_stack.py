@@ -65,6 +65,7 @@ class DemoAppStack(Stack):
         self.cluster = ecs.Cluster(
             self,
             "Cluster",
+            cluster_name="mini-debug-assist-cluster",
             vpc=self.vpc,
             container_insights=False,  # Disable to avoid lookups
         )
@@ -232,3 +233,14 @@ class DemoAppStack(Stack):
         self.service_name = self.fargate_service.service.service_name
         self.load_balancer_dns = self.fargate_service.load_balancer.load_balancer_dns_name
         self.metric_namespace = "MiniDebugAssist/Demo"
+
+        # Output the demo app URL
+        from aws_cdk import CfnOutput
+
+        CfnOutput(
+            self,
+            "DemoAppUrl",
+            value=f"http://{self.load_balancer_dns}",
+            description="Demo application URL",
+            export_name=f"{Stack.of(self).stack_name}-DemoAppUrl",
+        )

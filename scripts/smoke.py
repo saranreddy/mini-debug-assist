@@ -26,7 +26,7 @@ def check_demo_app():
                 "cloudformation",
                 "describe-stacks",
                 "--stack-name",
-                "MiniDebugAssist-DemoAppStack",
+                "MiniDebugAssist-DemoApp",
             ],
             capture_output=True,
             text=True,
