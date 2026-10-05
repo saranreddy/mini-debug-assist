@@ -97,7 +97,7 @@ def _mock_commit_analysis(issue_data: dict) -> SubagentResult:
 
 def _find_commit_with_github_mcp(
     issue_data: dict, code_context: dict, config: AgentConfig
-) -> SubagentResult:
+) -> tuple[SubagentResult, int]:
     """
     Find offending commit using bounded tool-use.
 

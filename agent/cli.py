@@ -11,6 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -27,11 +28,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_issue_from_file(filepath: str) -> dict:
+def load_issue_from_file(filepath: str) -> dict[Any, Any]:
     """Load issue data from YAML fixture."""
     try:
         with open(filepath) as f:
-            data = yaml.safe_load(f)
+            data: dict[Any, Any] = yaml.safe_load(f)
         logger.info(f"Loaded issue from {filepath}")
         return data
     except Exception as e:

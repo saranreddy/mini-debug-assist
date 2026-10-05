@@ -37,7 +37,8 @@ def breadcrumbs_subagent(state_dict: dict[str, Any], config: AgentConfig) -> dic
         result = _mock_breadcrumb_analysis(issue_data, logs)
         turns = 1
     else:
-        result, turns = _analyze_breadcrumbs_with_llm(issue_data, logs, config)
+        result = _analyze_breadcrumbs_with_llm(issue_data, logs, config)
+        turns = 1
 
     # Add result to subagent_results
     subagent_results = state_dict.get("subagent_results", {})

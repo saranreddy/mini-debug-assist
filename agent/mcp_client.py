@@ -93,11 +93,15 @@ class MCPClient:
 
         try:
             env = os.environ.copy()
-            env.update(config["env"])
+            env_update: dict[str, str] = config["env"]  # type: ignore[assignment]
+            env.update(env_update)
 
             # Start server as stdio subprocess
+            args_list: list[str] = list(config["args"])  # type: ignore[arg-type]
+            command: str = str(config["command"])
+            cmd_list: list[str] = [command] + args_list
             process = subprocess.Popen(
-                [config["command"]] + config["args"],
+                cmd_list,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -179,7 +183,9 @@ class MCPClient:
             logger.error(f"Error initializing server {server_name}: {e}", exc_info=True)
             return False
 
-    def _send_notification(self, server_name: str, method: str, params: dict = None):
+    def _send_notification(
+        self, server_name: str, method: str, params: dict[str, Any] | None = None
+    ):
         """
         Send a JSON-RPC notification (no id, no response expected).
         """
@@ -190,7 +196,7 @@ class MCPClient:
         process = server_info["process"]
 
         try:
-            notification = {
+            notification: dict[str, Any] = {
                 "jsonrpc": "2.0",
                 "method": method,
             }
@@ -307,7 +313,8 @@ class MCPClient:
                 # Check if this response matches our request
                 if response["id"] == request_id:
                     logger.debug(f"Received matching response from {server_name}: {response}")
-                    return response
+                    result_response: dict[Any, Any] = response
+                    return result_response
                 else:
                     logger.debug(
                         f"Skipping response with different ID: {response['id']} != {request_id}"
@@ -326,7 +333,8 @@ class MCPClient:
         """Get next request ID."""
         with self._lock:
             self._request_id_counter += 1
-            return self._request_id_counter
+            result: int = self._request_id_counter
+            return result
 
     def call_tool(self, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         """
@@ -405,7 +413,8 @@ class MCPClient:
 
                     # Try to parse as JSON
                     try:
-                        return json.loads(text_content)
+                        parsed: dict[str, Any] = json.loads(text_content)
+                        return parsed
                     except (json.JSONDecodeError, ValueError):
                         return {"success": True, "result": text_content}
                 else:

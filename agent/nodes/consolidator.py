@@ -100,16 +100,17 @@ def _merge_subagent_results(state: AgentState) -> dict[str, Any]:
     - All evidence
     - Confidence scores
     """
-    merged = {
+    all_evidence: list[Any] = []
+    merged: dict[str, Any] = {
         "primary_hypothesis": state.rca_result.summary if state.rca_result else "",
         "subagent_hypotheses": {},
-        "all_evidence": [],
+        "all_evidence": all_evidence,
         "confidence_scores": {},
     }
 
     # Add primary RCA evidence
     if state.rca_result:
-        merged["all_evidence"].extend(state.rca_result.evidence)
+        all_evidence.extend(state.rca_result.evidence)
         merged["confidence_scores"]["primary_rca"] = state.rca_result.confidence
 
     # Add subagent results
@@ -124,7 +125,7 @@ def _merge_subagent_results(state: AgentState) -> dict[str, Any]:
             evidence = result.evidence
 
         merged["subagent_hypotheses"][subagent_type] = hypothesis
-        merged["all_evidence"].extend(evidence)
+        all_evidence.extend(evidence)
         merged["confidence_scores"][subagent_type] = confidence
 
     return merged
@@ -385,11 +386,13 @@ Code Context: {code_json}
 Re-analyze with the context from other subagents."""
 
     try:
+        from dataclasses import replace
+
         result, turns = invoke_subagent_llm(
             subagent_type=subagent_name,
             system_prompt=system_prompt,
             user_message=user_message,
-            config=config._replace(max_turns_subagent=10),  # Higher turn cap for retry
+            config=replace(config, max_turns_subagent=10),  # Higher turn cap for retry
         )
 
         logger.info(f"Retry complete: confidence={result.confidence:.2f}, turns={turns}")

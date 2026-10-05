@@ -240,7 +240,7 @@ Analyze this error and determine the root cause."""
             tools=tools,
             max_turns=config.max_turns_classify,
             node_name="classify_rca",
-            response_schema=RCAResult,
+            response_schema=RCAResult,  # type: ignore[arg-type]
         )
 
         # Parse result with retry capability
@@ -260,7 +260,7 @@ Analyze this error and determine the root cause."""
                 tools=None,  # No tools on retry
                 max_turns=1,
                 node_name="classify_rca_retry",
-                response_schema=RCAResult,
+                response_schema=RCAResult,  # type: ignore[arg-type]
             )
             return retry_output
 

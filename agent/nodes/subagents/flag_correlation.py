@@ -105,7 +105,9 @@ def _mock_flag_correlation(issue_data: dict) -> SubagentResult:
     )
 
 
-def _analyze_flag_correlation_with_mcp(issue_data: dict, config: AgentConfig) -> SubagentResult:
+def _analyze_flag_correlation_with_mcp(
+    issue_data: dict, config: AgentConfig
+) -> tuple[SubagentResult, int]:
     """
     Analyze flag correlation using bounded tool-use.
 

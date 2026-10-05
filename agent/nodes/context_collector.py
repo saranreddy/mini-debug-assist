@@ -289,6 +289,8 @@ def _fetch_code_context(issue_data: dict[str, Any], config: AgentConfig) -> dict
         for file_path in files_to_fetch:
             try:
                 file_content = repo.get_contents(file_path)
+                if isinstance(file_content, list):
+                    raise ValueError(f"Expected single file, got directory for {file_path}")
                 content = base64.b64decode(file_content.content).decode("utf-8")
                 code_context[file_path] = content
                 logger.info(f"Fetched code context for {file_path}")
@@ -321,7 +323,7 @@ def _prune_logs(logs: list[dict], max_entries: int = 100) -> list[dict]:
 
     # Deduplicate repeated messages
     deduped_logs = []
-    seen_messages = {}
+    seen_messages: dict[str, dict[str, Any]] = {}
 
     for log in sorted_logs:
         message = log.get("message", "")
@@ -329,8 +331,9 @@ def _prune_logs(logs: list[dict], max_entries: int = 100) -> list[dict]:
 
         if message_key in seen_messages:
             # Increment count for duplicate
-            seen_messages[message_key]["count"] += 1
-            seen_messages[message_key]["last_occurrence"] = log
+            msg_info = seen_messages[message_key]
+            msg_info["count"] = msg_info["count"] + 1
+            msg_info["last_occurrence"] = log
         else:
             # New message
             seen_messages[message_key] = {
@@ -341,11 +344,13 @@ def _prune_logs(logs: list[dict], max_entries: int = 100) -> list[dict]:
 
     # Reconstruct log list with deduplication info
     for message_key, info in seen_messages.items():
-        log = info["first"].copy()
+        first_log: dict[str, Any] = info["first"]  # type: ignore[assignment]
+        log = first_log.copy()
+        count_val: int = info["count"]  # type: ignore[assignment]
 
-        if info["count"] > 1:
-            log["message"] = f"{log.get('message', '')} " f"[repeated {info['count']} times]"
-            log["dedup_count"] = info["count"]
+        if count_val > 1:
+            log["message"] = f"{log.get('message', '')} " f"[repeated {count_val} times]"
+            log["dedup_count"] = count_val
 
         # Truncate very long messages
         if "message" in log and len(log["message"]) > 500:

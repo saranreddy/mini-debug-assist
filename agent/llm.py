@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import boto3
@@ -225,7 +226,8 @@ def _extract_json_from_text(text: str) -> dict[str, Any] | None:
 
     # Try direct JSON parse
     try:
-        return json.loads(text.strip())
+        result: dict[str, Any] = json.loads(text.strip())
+        return result
     except (json.JSONDecodeError, ValueError):
         pass
 
@@ -233,7 +235,8 @@ def _extract_json_from_text(text: str) -> dict[str, Any] | None:
     xml_match = re.search(r"<result>(.*?)</result>", text, re.DOTALL)
     if xml_match:
         try:
-            return json.loads(xml_match.group(1).strip())
+            result2: dict[str, Any] = json.loads(xml_match.group(1).strip())
+            return result2
         except (json.JSONDecodeError, ValueError):
             pass
 
@@ -241,7 +244,8 @@ def _extract_json_from_text(text: str) -> dict[str, Any] | None:
     code_block_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
     if code_block_match:
         try:
-            return json.loads(code_block_match.group(1).strip())
+            result3: dict[str, Any] = json.loads(code_block_match.group(1).strip())
+            return result3
         except (json.JSONDecodeError, ValueError):
             pass
 
@@ -265,7 +269,7 @@ def _force_final_answer(conversation: list[dict[str, Any]], node_name: str) -> d
 
 def parse_rca_result(
     llm_output: dict[str, Any],
-    retry_fn: callable | None = None,
+    retry_fn: Callable[[], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Parse RCA result from LLM output.

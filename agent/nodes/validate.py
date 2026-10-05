@@ -293,7 +293,7 @@ def _check_symptom_hiding(state: AgentState) -> list[str]:
 
     This prevents patches that mask errors instead of fixing them.
     """
-    issues = []
+    issues: list[str] = []
 
     if state.fix_result is None:
         return issues

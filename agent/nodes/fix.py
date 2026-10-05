@@ -158,8 +158,9 @@ The diff should be a valid unified diff that can be applied with `patch`."""
             previous_attempts_text += (
                 f"Failure Reason:\n{attempt.get('failure_reason', 'N/A')[:500]}\n"
             )
-            if attempt.get("test_output"):
-                previous_attempts_text += f"Test Output:\n{attempt.get('test_output')[:500]}\n"
+            test_output = attempt.get("test_output")
+            if test_output:
+                previous_attempts_text += f"Test Output:\n{test_output[:500]}\n"
 
     user_message = f"""Issue: {state.issue_title}
 

@@ -25,7 +25,7 @@ Flow:
 """
 
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 from langgraph.graph import END, StateGraph
 
@@ -213,7 +213,7 @@ def run_debug_agent(
     issue_title: str,
     issue_data: dict,
     config: AgentConfig,
-) -> AgentState:
+) -> dict[str, Any] | AgentState:
     """
     Run the debug agent on an issue.
 

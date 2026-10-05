@@ -69,8 +69,9 @@ class AgentConfig:
     @classmethod
     def from_env(cls, mode: str = "mock") -> "AgentConfig":
         """Create config from environment variables."""
+        mode_literal: Literal["mock", "aws"] = mode if mode in ("mock", "aws") else "mock"  # type: ignore[assignment]
         return cls(
-            mode=mode,
+            mode=mode_literal,
             agent_type=os.getenv("AGENT_TYPE", "python-web"),
             bedrock_region=os.getenv("AWS_REGION", "us-east-1"),
             model_classify=os.getenv("MODEL_CLASSIFY", "us.anthropic.claude-sonnet-5-5"),

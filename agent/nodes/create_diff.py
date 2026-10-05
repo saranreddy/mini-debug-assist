@@ -13,6 +13,8 @@ Uber's output: diff with Summary (Problem/Fix/Flipr Gating/Test Plan)
 
 import logging
 
+from github.InputGitTreeElement import InputGitTreeElement
+
 from agent.config import AgentConfig
 from agent.state import AgentState
 
@@ -102,7 +104,7 @@ def _create_github_pr(state: AgentState, config: AgentConfig) -> str | None:
         base_tree = base_commit.tree
 
         # Create new tree with file changes
-        tree_elements = []
+        tree_elements: list[InputGitTreeElement] = []
 
         for change in state.fix_result.changes:
             file_path = change.get("file", "")
@@ -115,6 +117,8 @@ def _create_github_pr(state: AgentState, config: AgentConfig) -> str | None:
             # Get current file content from base branch
             try:
                 file_content = repo.get_contents(file_path, ref=default_branch)
+                if isinstance(file_content, list):
+                    raise ValueError(f"Expected single file, got directory for {file_path}")
                 current_content = file_content.decoded_content.decode("utf-8")
             except Exception as e:
                 logger.warning(f"File {file_path} not found in base branch, assuming new file: {e}")
@@ -173,12 +177,12 @@ def _create_github_pr(state: AgentState, config: AgentConfig) -> str | None:
 
             # Add to tree elements
             tree_elements.append(
-                {
-                    "path": file_path,
-                    "mode": "100644",  # Regular file
-                    "type": "blob",
-                    "sha": blob.sha,
-                }
+                InputGitTreeElement(
+                    path=file_path,
+                    mode="100644",  # Regular file
+                    type="blob",
+                    sha=blob.sha,
+                )
             )
             logger.info(f"Created blob for {file_path}: {blob.sha[:8]}")
 
