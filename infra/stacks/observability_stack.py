@@ -52,13 +52,10 @@ class ObservabilityStack(Stack):
 
         # ===== CloudWatch Alarms =====
         
-        # High error rate alarm
+        # High error rate alarm using custom metric from logs
         error_metric = cloudwatch.Metric(
-            namespace="AWS/ECS",
-            metric_name="HTTPCode_Target_5XX_Count",
-            dimensions_map={
-                "ServiceName": demo_app_stack.service_name,
-            },
+            namespace=demo_app_stack.metric_namespace,
+            metric_name="ErrorCount",
             statistic="Sum",
             period=Duration.minutes(5),
         )
@@ -67,9 +64,9 @@ class ObservabilityStack(Stack):
             self,
             "HighErrorRateAlarm",
             alarm_name="MiniDebugAssist-HighErrorRate",
-            alarm_description="Triggers when error rate is high",
+            alarm_description="Triggers when error rate is high (from structured logs)",
             metric=error_metric,
-            threshold=10,  # 10 errors in 5 minutes
+            threshold=5,  # 5 errors in 5 minutes
             evaluation_periods=1,
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,

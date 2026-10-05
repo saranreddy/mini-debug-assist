@@ -13,6 +13,7 @@ Maps to Uber's runtime jobs on Kubernetes with Buildkite CI.
 
 from aws_cdk import (
     Duration,
+    RemovalPolicy,
     Stack,
     aws_events as events,
     aws_events_targets as targets,
@@ -22,6 +23,8 @@ from aws_cdk import (
     aws_logs as logs,
     aws_codebuild as codebuild,
     aws_secretsmanager as secretsmanager,
+    aws_dynamodb as dynamodb,
+    aws_ecr_assets as ecr_assets,
 )
 from constructs import Construct
 
@@ -48,6 +51,20 @@ class AgentStack(Stack):
             secret_name="mini-debug-assist/github-token",
             description="GitHub token for creating PRs",
         )
+        
+        # ===== DynamoDB Deduplication Table =====
+        self.dedup_table = dynamodb.Table(
+            self,
+            "DedupTable",
+            table_name="mini-debug-assist-dedup",
+            partition_key=dynamodb.Attribute(
+                name="error_signature",
+                type=dynamodb.AttributeType.STRING
+            ),
+            time_to_live_attribute="ttl",
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            removal_policy=RemovalPolicy.DESTROY,  # For development
+        )
 
         # ===== Agent IAM Role =====
         self.agent_role = iam.Role(
@@ -57,7 +74,7 @@ class AgentStack(Stack):
             description="IAM role for debug agent with least-privilege access",
         )
 
-        # Bedrock InvokeModel permission
+        # Bedrock InvokeModel permission (matches configured model IDs)
         self.agent_role.add_to_policy(
             iam.PolicyStatement(
                 sid="BedrockInvokeModel",
@@ -66,10 +83,11 @@ class AgentStack(Stack):
                     "bedrock:InvokeModelWithResponseStream",
                 ],
                 resources=[
-                    # Claude Sonnet
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-sonnet-*",
-                    # Claude Opus
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-opus-*",
+                    # Match actual model IDs from config
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0",
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-opus-20240229-v1:0",
+                    # Also allow wildcard for inference profiles if used
+                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-*",
                 ],
             )
         )
@@ -135,7 +153,23 @@ class AgentStack(Stack):
 
         # Secrets Manager read (for GitHub token)
         self.github_token_secret.grant_read(self.agent_role)
+        
+        # DynamoDB access (for deduplication)
+        self.dedup_table.grant_read_write_data(self.agent_role)
 
+        # ===== Build Agent Container Image =====
+        # Build Docker image from agent/ directory
+        import os
+        agent_dockerfile_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "agent"
+        )
+        
+        self.agent_image = ecs.ContainerImage.from_asset(
+            agent_dockerfile_path,
+            file="Dockerfile",
+        )
+        
         # ===== Agent Task Definition =====
         self.agent_task_def = ecs.FargateTaskDefinition(
             self,
@@ -145,11 +179,10 @@ class AgentStack(Stack):
             task_role=self.agent_role,
         )
 
-        # Agent container
-        # Note: In production, this would be a prebuilt image with the agent code
+        # Agent container with built image
         self.agent_container = self.agent_task_def.add_container(
             "AgentContainer",
-            image=ecs.ContainerImage.from_registry("public.ecr.aws/docker/library/python:3.11-slim"),
+            image=self.agent_image,
             logging=ecs.LogDriver.aws_logs(
                 stream_prefix="debug-agent",
                 log_group=logs.LogGroup(
@@ -162,6 +195,9 @@ class AgentStack(Stack):
             environment={
                 "AWS_REGION": self.region,
                 "AGENT_TYPE": "python-web",
+                "DEMO_APP_LOG_GROUP": demo_app_stack.log_group.log_group_name,
+                "DEDUP_TABLE_NAME": self.dedup_table.table_name,
+                "GITHUB_REPO": os.getenv("GITHUB_REPO", ""),
             },
             secrets={
                 "GITHUB_TOKEN": ecs.Secret.from_secrets_manager(
@@ -170,26 +206,49 @@ class AgentStack(Stack):
             },
         )
 
-        # ===== EventBridge Rule =====
-        # Trigger agent on CloudWatch alarm or manual invoke
-        self.trigger_rule = events.Rule(
+        # ===== EventBridge Rule (Event-Driven) =====
+        # Trigger agent on CloudWatch Alarm State Change
+        self.alarm_trigger_rule = events.Rule(
             self,
-            "AgentTriggerRule",
-            description="Trigger debug agent on high error rate",
-            # Example: trigger every 5 minutes for demo
-            # In production, this would be event-driven from CloudWatch alarms
-            schedule=events.Schedule.rate(Duration.minutes(5)),
-            enabled=False,  # Disabled by default, enable manually
+            "AlarmTriggerRule",
+            description="Trigger debug agent when CloudWatch alarm enters ALARM state",
+            event_pattern=events.EventPattern(
+                source=["aws.cloudwatch"],
+                detail_type=["CloudWatch Alarm State Change"],
+                detail={
+                    "state": {
+                        "value": ["ALARM"]
+                    },
+                    # Optional: filter for specific alarms
+                    # "alarmName": [{"prefix": "MiniDebugAssist-"}]
+                },
+            ),
+            enabled=True,
         )
 
-        # Target: Run agent ECS task
-        self.trigger_rule.add_target(
+        # Target: Run agent ECS task with alarm event data
+        self.alarm_trigger_rule.add_target(
             targets.EcsTask(
                 cluster=demo_app_stack.cluster,
                 task_definition=self.agent_task_def,
                 subnet_selection=ec2.SubnetSelection(
                     subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS
                 ),
+                container_overrides=[
+                    targets.ContainerOverride(
+                        container_name="AgentContainer",
+                        environment=[
+                            targets.TaskEnvironmentVariable(
+                                name="ISSUE_SOURCE",
+                                value="alarm",
+                            ),
+                            targets.TaskEnvironmentVariable(
+                                name="ALARM_EVENT_JSON",
+                                value=events.EventField.from_path("$"),
+                            ),
+                        ],
+                    )
+                ],
             )
         )
 

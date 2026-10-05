@@ -40,14 +40,83 @@ def load_issue_from_file(filepath: str) -> dict:
 
 def load_issue_from_aws(issue_id: str, config) -> dict:
     """
-    Load issue from AWS (CloudWatch, Healthline-equivalent).
+    Load issue from AWS CloudWatch alarm event.
     
-    In production, this would query your issue tracking system.
-    For now, this is a placeholder.
+    Reads alarm data from environment variables set by EventBridge:
+    - ISSUE_SOURCE: "alarm"
+    - ALARM_EVENT_JSON: The full CloudWatch alarm event
+    
+    Or falls back to parsing issue_id if provided.
     """
-    logger.error("Loading issues from AWS is not yet implemented")
-    logger.error("Use --mode mock with --issue <file> instead")
+    import json
+    
+    # Try to load from environment (event-driven invocation)
+    issue_source = os.getenv("ISSUE_SOURCE")
+    
+    if issue_source == "alarm":
+        alarm_event_json = os.getenv("ALARM_EVENT_JSON")
+        if alarm_event_json:
+            try:
+                alarm_event = json.loads(alarm_event_json)
+                return _parse_alarm_event(alarm_event)
+            except Exception as e:
+                logger.error(f"Error parsing alarm event: {e}")
+    
+    # Fall back to querying by issue_id
+    logger.error(
+        f"No alarm event in environment and direct query by ID not implemented. "
+        f"Set ISSUE_SOURCE=alarm and ALARM_EVENT_JSON for event-driven mode."
+    )
     sys.exit(1)
+
+
+def _parse_alarm_event(alarm_event: dict) -> dict:
+    """
+    Parse CloudWatch alarm event into issue data.
+    
+    Alarm event structure:
+    {
+        "source": "aws.cloudwatch",
+        "detail-type": "CloudWatch Alarm State Change",
+        "detail": {
+            "alarmName": "...",
+            "state": {"value": "ALARM"},
+            "configuration": {...},
+            ...
+        }
+    }
+    """
+    detail = alarm_event.get("detail", {})
+    alarm_name = detail.get("alarmName", "Unknown")
+    state_value = detail.get("state", {}).get("value", "UNKNOWN")
+    state_reason = detail.get("state", {}).get("reason", "")
+    timestamp = alarm_event.get("time", "")
+    
+    # Extract metric info
+    configuration = detail.get("configuration", {})
+    metric_name = configuration.get("metrics", [{}])[0].get("metricStat", {}).get("metric", {}).get("name", "")
+    namespace = configuration.get("metrics", [{}])[0].get("metricStat", {}).get("metric", {}).get("namespace", "")
+    dimensions = configuration.get("metrics", [{}])[0].get("metricStat", {}).get("metric", {}).get("dimensions", {})
+    
+    # Parse dimensions for context
+    error_type = dimensions.get("error_type", "Unknown")
+    endpoint = dimensions.get("endpoint", "Unknown")
+    
+    return {
+        "issue_id": f"ALARM-{alarm_name}-{timestamp[:10]}",
+        "title": f"CloudWatch Alarm: {alarm_name}",
+        "source": "cloudwatch_alarm",
+        "alarm_name": alarm_name,
+        "alarm_state": state_value,
+        "alarm_reason": state_reason,
+        "timestamp": timestamp,
+        "metric_name": metric_name,
+        "metric_namespace": namespace,
+        "error_type": error_type,
+        "endpoint": endpoint,
+        "service": "mini-debug-assist-demo",
+        "environment": "production",
+    }
 
 
 def main():
@@ -79,8 +148,9 @@ def main():
     # Validate arguments
     if args.mode == "mock" and not args.issue:
         parser.error("--issue required in mock mode")
-    if args.mode == "aws" and not args.issue_id:
-        parser.error("--issue-id required in aws mode")
+    # In aws mode, issue_id is optional if running from alarm event
+    if args.mode == "aws" and not args.issue_id and not os.getenv("ISSUE_SOURCE"):
+        parser.error("--issue-id required in aws mode (or set ISSUE_SOURCE=alarm)")
     
     # Get configuration
     config = get_config(mode=args.mode)
@@ -97,12 +167,32 @@ def main():
         issue_id = issue_data.get("issue_id", "UNKNOWN")
         issue_title = issue_data.get("title", "No title")
     else:
-        issue_id = args.issue_id
-        issue_data = load_issue_from_aws(issue_id, config)
-        issue_title = issue_data.get("title", "No title")
+        # AWS mode: from alarm event or by ID
+        if os.getenv("ISSUE_SOURCE") == "alarm":
+            issue_data = load_issue_from_aws(None, config)
+            issue_id = issue_data.get("issue_id", "UNKNOWN")
+            issue_title = issue_data.get("title", "No title")
+        else:
+            issue_id = args.issue_id
+            issue_data = load_issue_from_aws(issue_id, config)
+            issue_title = issue_data.get("title", "No title")
     
     logger.info(f"Processing Issue: {issue_id} - {issue_title}")
     logger.info("=" * 60)
+    
+    # Deduplication check (AWS mode only)
+    if args.mode == "aws":
+        from agent.dedup import get_error_signature, should_investigate
+        
+        error_signature = get_error_signature(
+            alarm_name=issue_data.get("alarm_name", issue_id),
+            error_type=issue_data.get("error_type", ""),
+            endpoint=issue_data.get("endpoint", ""),
+        )
+        
+        if not should_investigate(error_signature):
+            logger.info("Skipping duplicate investigation (recent investigation exists)")
+            sys.exit(0)
     
     # Run agent
     try:

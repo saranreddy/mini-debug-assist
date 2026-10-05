@@ -183,6 +183,26 @@ class DemoAppStack(Stack):
             unhealthy_threshold_count=3,
         )
 
+        # ===== CloudWatch Logs Metric Filter =====
+        # Create metric filter to count errors from structured logs
+        from aws_cdk import aws_logs as logs_
+        
+        logs_.MetricFilter(
+            self,
+            "ErrorMetricFilter",
+            log_group=self.log_group,
+            metric_namespace="MiniDebugAssist/Demo",
+            metric_name="ErrorCount",
+            filter_pattern=logs_.FilterPattern.literal('{ $.level = "ERROR" }'),
+            metric_value="1",
+            default_value=0,
+            dimensions={
+                "error_type": "$.exception_type",
+                "endpoint": "$.path",
+            },
+        )
+        
         # Store references for other stacks
         self.service_name = self.fargate_service.service.service_name
         self.load_balancer_dns = self.fargate_service.load_balancer.load_balancer_dns_name
+        self.metric_namespace = "MiniDebugAssist/Demo"

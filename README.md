@@ -152,6 +152,103 @@ make test
 # - Agent graph tests
 ```
 
+## 🔔 How the Agent Wakes Up (Event-Driven Architecture)
+
+In production, the agent is triggered automatically by CloudWatch alarms:
+
+### The Wake-Up Chain
+
+```mermaid
+sequenceDiagram
+    participant App as Demo App
+    participant CWL as CloudWatch Logs
+    participant Metric as CloudWatch Metric
+    participant Alarm as CloudWatch Alarm
+    participant EB as EventBridge
+    participant ECS as ECS Fargate
+    participant Agent as Debug Agent
+    participant DDB as DynamoDB
+    
+    App->>CWL: Structured JSON logs
+    Note over App,CWL: {"level":"ERROR","exception_type":"KeyError",...}
+    
+    CWL->>Metric: Metric filter extracts errors
+    Note over CWL,Metric: Dimensions: error_type, endpoint
+    
+    Metric->>Alarm: ErrorCount > threshold
+    Note over Metric,Alarm: 5 errors in 5 minutes
+    
+    Alarm->>EB: CloudWatch Alarm State Change event
+    Note over Alarm,EB: state.value = "ALARM"
+    
+    EB->>ECS: Trigger agent task
+    Note over EB,ECS: Container overrides:<br/>ISSUE_SOURCE=alarm<br/>ALARM_EVENT_JSON={...}
+    
+    ECS->>Agent: Start container
+    
+    Agent->>DDB: Check deduplication
+    Note over Agent,DDB: error_signature hash<br/>TTL: 1 hour
+    
+    alt First occurrence
+        DDB-->>Agent: Proceed (new signature)
+        Agent->>CWL: Query logs (Logs Insights)
+        Agent->>ECS: Fetch X-Ray traces
+        Agent->>Agent: RCA + subagents
+        Agent->>Agent: Generate fix
+        Agent->>Agent: Create PR
+    else Duplicate
+        DDB-->>Agent: Skip (recent investigation)
+        Agent->>ECS: Exit early
+    end
+```
+
+### Components
+
+1. **CloudWatch Logs Metric Filter**: Counts ERROR-level events
+   - Pattern: `{ $.level = "ERROR" }`
+   - Dimensions: `error_type` (from `$.exception_type`), `endpoint` (from `$.path`)
+   - Namespace: `MiniDebugAssist/Demo`
+
+2. **CloudWatch Alarm**: Triggers on high error rate
+   - Metric: `ErrorCount`
+   - Threshold: 5 errors in 5 minutes
+   - State: `ALARM` → triggers agent
+
+3. **EventBridge Rule**: Event-driven trigger
+   - Pattern: `CloudWatch Alarm State Change` with `state.value = "ALARM"`
+   - Target: ECS Fargate task (agent)
+   - Passes alarm event via container environment
+
+4. **Deduplication (DynamoDB)**: Prevents duplicate investigations
+   - Key: `error_signature` (hash of alarm_name + error_type + endpoint)
+   - TTL: 1 hour (automatically cleaned up)
+   - Condition: Only insert if not exists or expired
+
+5. **Agent Execution**:
+   - Reads `ALARM_EVENT_JSON` from environment
+   - Checks dedup table
+   - Queries CloudWatch Logs Insights (polls until complete)
+   - Fetches X-Ray traces for error window
+   - Fetches code context from GitHub
+   - Runs RCA with 3 parallel subagents
+   - Generates and validates fix
+   - Creates GitHub PR
+
+### Deduplication Logic
+
+The agent uses an error signature to prevent duplicate investigations:
+
+```python
+signature = sha256(alarm_name + "|" + error_type + "|" + endpoint)[:32]
+
+# DynamoDB conditional put:
+# - If signature doesn't exist → investigate (first occurrence)
+# - If signature exists and TTL not expired → skip (duplicate)
+# - If signature expired → investigate (error recurred)
+```
+
+This ensures that repeated alarms for the same error don't spawn multiple parallel investigations.
+
 ## 🐛 The Three Planted Bugs
 
 ### 1. KeyError Bug (`/user/{id}`)
