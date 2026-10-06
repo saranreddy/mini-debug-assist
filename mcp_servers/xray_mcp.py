@@ -9,15 +9,15 @@ MCP Tools:
 - query_traces: Query traces by filter expression
 """
 
-import asyncio
 import json
 from datetime import datetime, timedelta
 from typing import Any
 
 import boto3
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
+
+from mcp_servers._runtime import aws_region, run_stdio
 
 # Initialize MCP server
 app = Server("xray-mcp")
@@ -91,7 +91,7 @@ async def _get_trace(args: dict) -> list[TextContent]:
     trace_id = args["trace_id"]
 
     try:
-        client = boto3.client("xray")
+        client = boto3.client("xray", region_name=aws_region())
 
         # Get trace
         response = client.batch_get_traces(
@@ -151,7 +151,7 @@ async def _query_traces(args: dict) -> list[TextContent]:
         end_time = datetime.now()
 
     try:
-        client = boto3.client("xray")
+        client = boto3.client("xray", region_name=aws_region())
 
         # Get trace summaries
         response = client.get_trace_summaries(
@@ -193,7 +193,7 @@ async def _query_traces(args: dict) -> list[TextContent]:
 
 def main():
     """Run the MCP server."""
-    asyncio.run(stdio_server(app))
+    run_stdio(app)
 
 
 if __name__ == "__main__":

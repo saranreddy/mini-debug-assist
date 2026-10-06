@@ -4,55 +4,72 @@ MCP (Model Context Protocol) client for tool execution.
 Manages MCP server lifecycle and tool calling via JSON-RPC 2.0 over stdio.
 """
 
+import atexit
 import json
 import logging
 import os
 import subprocess
+import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# MCP server configurations
-MCP_SERVERS = {
-    # Our own Python MCP servers (always available)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# MCP server configurations.
+#
+# Our Python servers run with the agent's own interpreter (sys.executable) from
+# the repo root, so `-m mcp_servers.<name>` resolves both in the container
+# (/app, installed with `pip install -e .`) and in a local checkout. They inherit
+# the agent's environment at start time: AWS_REGION, GITHUB_TOKEN, GITHUB_REPO and
+# DEMO_APP_LOG_GROUP come from the ECS task definition (infra/stacks/agent_stack.py).
+# "env_from" maps a variable the server expects to the agent variable holding it.
+MCP_SERVERS: dict[str, dict[str, Any]] = {
     "cloudwatch_logs": {
-        "command": "python3",
+        "command": sys.executable,
         "args": ["-m", "mcp_servers.cloudwatch_logs"],
-        "env": {
-            "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
-        },
     },
     "xray": {
-        "command": "python3",
+        "command": sys.executable,
         "args": ["-m", "mcp_servers.xray_mcp"],
-        "env": {
-            "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
-        },
     },
     "github_mcp": {
-        "command": "python3",
+        "command": sys.executable,
         "args": ["-m", "mcp_servers.github_mcp"],
-        "env": {
-            "GITHUB_TOKEN": os.getenv("GITHUB_TOKEN", ""),
-        },
     },
     "appconfig_flags": {
-        "command": "python3",
+        "command": sys.executable,
         "args": ["-m", "mcp_servers.appconfig_flags"],
-        "env": {
-            "AWS_REGION": os.getenv("AWS_REGION", "us-east-1"),
-        },
     },
-    # Optional npm-based GitHub server (requires npx)
+    # Optional npm-based GitHub server (requires npx; not in the agent image and
+    # never started automatically).
     "github_npm": {
         "command": "npx",
         "args": ["-y", "@modelcontextprotocol/server-github"],
-        "env": {
-            "GITHUB_PERSONAL_ACCESS_TOKEN": os.getenv("GITHUB_TOKEN", ""),
-        },
+        "env_from": {"GITHUB_PERSONAL_ACCESS_TOKEN": "GITHUB_TOKEN"},
     },
 }
+
+# Which server provides each tool, so call_tool() can start servers lazily on the
+# first call (AWS mode never calls start_server() up front).
+TOOL_SERVERS: dict[str, str] = {
+    "search_code": "github_mcp",
+    "read_file": "github_mcp",
+    "create_pr": "github_mcp",
+    "query_logs": "cloudwatch_logs",
+    "get_log_streams": "cloudwatch_logs",
+    "get_trace": "xray",
+    "query_traces": "xray",
+    "get_flag": "appconfig_flags",
+    "list_flags": "appconfig_flags",
+    "update_flag": "appconfig_flags",
+}
+
+# Cold start (importing boto3, PyGithub and the MCP SDK) can take several
+# seconds on a 0.5 vCPU Fargate task.
+INIT_TIMEOUT_SECONDS = 30.0
 
 
 class MCPClient:
@@ -93,18 +110,18 @@ class MCPClient:
 
         try:
             env = os.environ.copy()
-            env_update: dict[str, str] = config["env"]  # type: ignore[assignment]
-            env.update(env_update)
+            for target, source in config.get("env_from", {}).items():
+                env[target] = os.environ.get(source, "")
 
-            # Start server as stdio subprocess
-            args_list: list[str] = list(config["args"])  # type: ignore[arg-type]
-            command: str = str(config["command"])
-            cmd_list: list[str] = [command] + args_list
+            # Start server as stdio subprocess. stderr is inherited so server logs
+            # land in the agent's CloudWatch stream (and a full pipe can't block it).
+            cmd_list: list[str] = [str(config["command"])] + list(config["args"])
             process = subprocess.Popen(
                 cmd_list,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stderr=None,
+                cwd=str(REPO_ROOT),
                 env=env,
                 text=True,  # Text mode for JSON lines
                 bufsize=1,  # Line buffered
@@ -163,7 +180,7 @@ class MCPClient:
                 },
             }
 
-            response = self._send_request(server_name, request, timeout=5.0)
+            response = self._send_request(server_name, request, timeout=INIT_TIMEOUT_SECONDS)
 
             if response and "result" in response:
                 logger.info(
@@ -232,7 +249,7 @@ class MCPClient:
                 "params": {},
             }
 
-            response = self._send_request(server_name, request, timeout=5.0)
+            response = self._send_request(server_name, request, timeout=INIT_TIMEOUT_SECONDS)
 
             if response and "result" in response:
                 tools = response["result"].get("tools", [])
@@ -295,7 +312,15 @@ class MCPClient:
                 response_line = process.stdout.readline()
 
                 if not response_line:
-                    logger.warning(f"Empty line from {server_name}")
+                    # EOF: the server exited (e.g. an import error, logged on stderr).
+                    # Don't spin on a closed pipe until the timeout.
+                    if process.poll() is not None or process.stdout.closed:
+                        logger.error(
+                            f"MCP server {server_name} exited (code {process.returncode}) "
+                            f"before answering request {request_id}"
+                        )
+                        return None
+                    time.sleep(0.05)
                     continue
 
                 try:
@@ -352,10 +377,21 @@ class MCPClient:
             logger.debug(f"MCP_MOCK_MODE=true, using mock implementation for {tool_name}")
             return self._call_tool_mock(tool_name, tool_input)
 
-        # Real mode: never silently fall back to mocks
+        # Real mode: never silently fall back to mocks.
+        # Start the server that provides this tool on first use.
+        server_name = self._server_for_tool(tool_name)
+        if server_name is None and tool_name in TOOL_SERVERS:
+            wanted = TOOL_SERVERS[tool_name]
+            if not self.start_server(wanted):
+                error_msg = f"Failed to start MCP server '{wanted}' for tool '{tool_name}'"
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg, "isError": True}
+            server_name = self._server_for_tool(tool_name)
+
         if not self.servers:
             error_msg = (
-                "No MCP servers started. Call start_server() first or set MCP_MOCK_MODE=true."
+                f"No MCP servers started and no server provides tool '{tool_name}'. "
+                "Call start_server() first or set MCP_MOCK_MODE=true."
             )
             logger.error(error_msg)
             return {
@@ -363,13 +399,6 @@ class MCPClient:
                 "error": error_msg,
                 "isError": True,
             }
-
-        # Find which server has this tool
-        server_name = None
-        for sname, tools in self.tools_cache.items():
-            if any(t["name"] == tool_name for t in tools):
-                server_name = sname
-                break
 
         if not server_name:
             available = self._list_available_tools()
@@ -541,6 +570,13 @@ class MCPClient:
             "summary": f"Created PR: {title}",
         }
 
+    def _server_for_tool(self, tool_name: str) -> str | None:
+        """Name of a started server whose tools/list included ``tool_name``."""
+        for sname, tools in self.tools_cache.items():
+            if sname in self.servers and any(t["name"] == tool_name for t in tools):
+                return str(sname)
+        return None
+
     def _list_available_tools(self) -> list[str]:
         """List all available tool names across all servers."""
         tools = []
@@ -572,4 +608,6 @@ def get_mcp_client() -> MCPClient:
     global _mcp_client
     if _mcp_client is None:
         _mcp_client = MCPClient()
+        # Lazily started servers are stopped when the agent process exits.
+        atexit.register(_mcp_client.stop_all)
     return _mcp_client

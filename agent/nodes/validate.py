@@ -12,11 +12,25 @@ Uber runs Bazel tests plus emulator/simulator validation.
 
 import logging
 import subprocess
+import sys
 
 from agent.config import AgentConfig
+from agent.patching import apply_unified_diff
 from agent.state import AgentState, ValidationResult
 
 logger = logging.getLogger(__name__)
+
+# Run with the agent's interpreter: `python -m pytest ...`
+VALIDATION_TEST_FILE = "tests/test_demo_app.py"
+VALIDATION_TEST_COMMAND = [
+    "-m",
+    "pytest",
+    "-xvs",
+    "--tb=short",
+    "-p",
+    "no:cacheprovider",
+    VALIDATION_TEST_FILE,
+]
 
 
 def validate_node(state: AgentState, config: AgentConfig) -> AgentState:
@@ -69,8 +83,8 @@ def _run_tests(state: AgentState, config: AgentConfig) -> ValidationResult:
     Actually run pytest to validate the fix.
 
     1. Copy repo (demo_app + tests) to a temp directory
-    2. Apply the diff using git apply or patch -p1
-    3. Run pytest in that temp directory
+    2. Apply the diff with git apply (agent/patching.py)
+    3. Run the demo app tests (VALIDATION_TEST_COMMAND) in that temp directory
     4. Parse test output
     5. Check for symptom-hiding patterns
     6. Store failure in fix_history if tests fail
@@ -132,57 +146,14 @@ def _run_tests(state: AgentState, config: AgentConfig) -> ValidationResult:
                 if not diff_content:
                     continue
 
-                # Write diff to a temp file
-                diff_file = os.path.join(temp_dir, "fix.patch")
-                with open(diff_file, "w") as f:
-                    f.write(diff_content)
-
                 logger.info(f"Applying diff to {file_path}")
-
-                # Try git apply --check first
-                check_result = subprocess.run(
-                    ["git", "apply", "--check", diff_file],
-                    cwd=temp_dir,
-                    capture_output=True,
-                    text=True,
-                )
-
-                if check_result.returncode == 0:
-                    # Apply patch with git apply
-                    apply_result = subprocess.run(
-                        ["git", "apply", diff_file],
-                        cwd=temp_dir,
-                        capture_output=True,
-                        text=True,
-                    )
-
-                    if apply_result.returncode != 0:
-                        apply_success = False
-                        apply_error = f"git apply failed: {apply_result.stderr}"
-                        logger.error(apply_error)
-                        break
-                    else:
-                        logger.info(f"Successfully applied patch to {file_path}")
-                else:
-                    # Fallback to patch -p1
-                    logger.warning(
-                        f"git apply --check failed, trying patch -p1: {check_result.stderr}"
-                    )
-                    patch_result = subprocess.run(
-                        ["patch", "-p1"],
-                        input=diff_content,
-                        cwd=temp_dir,
-                        capture_output=True,
-                        text=True,
-                    )
-
-                    if patch_result.returncode != 0:
-                        apply_success = False
-                        apply_error = f"patch -p1 failed: {patch_result.stderr}"
-                        logger.error(apply_error)
-                        break
-                    else:
-                        logger.info(f"Successfully applied patch (via patch -p1) to {file_path}")
+                ok, error = apply_unified_diff(diff_content, temp_dir)
+                if not ok:
+                    apply_success = False
+                    apply_error = f"git apply failed for {file_path}: {error}"
+                    logger.error(apply_error)
+                    break
+                logger.info(f"Successfully applied patch to {file_path}")
 
         # If patch application failed, return early
         if not apply_success:
@@ -209,11 +180,22 @@ def _run_tests(state: AgentState, config: AgentConfig) -> ValidationResult:
                 issues=issues,
             )
 
-        # Run pytest in temp directory
-        logger.info("Running pytest in temp directory")
+        # Run the demo app's tests in the temp directory. Only these: the rest of
+        # tests/ covers the agent and infra (CDK synth, Node, network), which the
+        # copied tree doesn't have and which a demo_app fix can't affect.
+        # MCP_MOCK_MODE keeps anything that imports the agent off real AWS/GitHub,
+        # and PYTHONPATH makes `import demo_app` resolve to the patched copy.
+        logger.info(f"Running {' '.join(VALIDATION_TEST_COMMAND)} in temp directory")
+        test_env = {
+            **os.environ,
+            "MCP_MOCK_MODE": "true",
+            "PYTHONPATH": temp_dir,
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
         result = subprocess.run(
-            ["pytest", "-xvs", "--tb=short", "tests/"],
+            [sys.executable, *VALIDATION_TEST_COMMAND],
             cwd=temp_dir,
+            env=test_env,
             capture_output=True,
             text=True,
             timeout=300,  # 5 minute timeout

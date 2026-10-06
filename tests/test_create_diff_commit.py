@@ -4,7 +4,7 @@ Tests for create_diff node with real GitHub commit via API.
 Uses mocked PyGithub client to test the commit logic.
 """
 
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 from agent.config import AgentConfig
 from agent.nodes.create_diff import create_diff_node
@@ -14,28 +14,14 @@ from agent.state import AgentState, FixResult
 class TestCreateDiffCommit:
     """Test GitHub commit logic in create_diff node."""
 
-    @patch("builtins.open", create=True)
-    @patch("subprocess.run")
     @patch("github.Github")
-    def test_create_diff_commits_changes(self, mock_github_class, mock_subprocess, mock_open):
-        """Test that create_diff commits file changes via GitHub API."""
-        # Mock file operations
-        mock_file_handle = MagicMock()
-        mock_file_handle.__enter__.return_value.read.return_value = 'email = user.get("email")'
-        mock_file_handle.__enter__.return_value.write = MagicMock()
-        mock_open.return_value = mock_file_handle
-
-        # Mock subprocess.run for patch command
-        mock_patch_result = Mock()
-        mock_patch_result.returncode = 0
-        mock_patch_result.stderr = ""
-        mock_subprocess.return_value = mock_patch_result
-
+    def test_create_diff_commits_changes(self, mock_github_class):
+        """create_diff applies the diff with real `git apply` and commits via the GitHub API."""
         # Setup state with fix result
         state = AgentState(
             issue_id="TEST-101",
             issue_title="Test commit",
-            issue_data={"exception_type": "KeyError"},
+            issue_data={"exception_type": "KeyError", "alarm_event_id": "c4c1c1c9-6542"},
         )
 
         state.fix_result = FixResult(
@@ -45,7 +31,7 @@ class TestCreateDiffCommit:
                     "file": "demo_app/main.py",
                     "diff": """--- a/demo_app/main.py
 +++ b/demo_app/main.py
-@@ -130,1 +130,1 @@
+@@ -2,1 +2,1 @@
 -    email = user["email"]
 +    email = user.get("email")
 """,
@@ -73,7 +59,9 @@ class TestCreateDiffCommit:
 
         # Mock get file contents
         mock_file = MagicMock()
-        mock_file.decoded_content = b"""email = user["email"]"""
+        mock_file.decoded_content = (
+            b"""def get_user(user):\n    email = user["email"]\n    return email\n"""
+        )
         mock_repo.get_contents.return_value = mock_file
 
         # Mock blob creation
@@ -115,7 +103,15 @@ class TestCreateDiffCommit:
         # Verify GitHub API calls
         mock_gh.get_repo.assert_called_once_with("test/repo")
         mock_repo.create_git_ref.assert_called_once()
-        mock_repo.create_git_blob.assert_called_once()
+        mock_repo.create_git_blob.assert_called_once_with(
+            'def get_user(user):\n    email = user.get("email")\n    return email\n', "utf-8"
+        )
+        # Unique branch per alarm event
+        branch_ref = mock_repo.create_git_ref.call_args.kwargs["ref"]
+        assert branch_ref == "refs/heads/fix/debug-assist-test-101-c4c1c1c9"
+        assert (
+            mock_repo.create_pull.call_args.kwargs["head"] == "fix/debug-assist-test-101-c4c1c1c9"
+        )
         mock_repo.create_git_tree.assert_called_once()
         mock_repo.create_git_commit.assert_called_once()
         mock_ref.edit.assert_called_once()

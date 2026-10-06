@@ -13,16 +13,23 @@ Uber's approach: Fixes ship gated behind Flipr flags, and the agent
 can propose rollbacks when correlation is strong (with approval).
 """
 
-import asyncio
 import json
 import os
 from typing import Any
 
-import boto3
 from botocore.exceptions import ClientError
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
+
+from demo_app.feature_flags import (
+    DEFAULT_APPLICATION,
+    DEFAULT_ENVIRONMENT,
+    DEFAULT_PROFILE,
+    AppConfigFlagClient,
+    flag_key,
+    flag_state,
+)
+from mcp_servers._runtime import aws_region, run_stdio
 
 # Initialize MCP server
 app = Server("appconfig-flags-mcp")
@@ -43,18 +50,18 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "flag_name": {
                         "type": "string",
-                        "description": "Feature flag name",
+                        "description": "Feature flag name (e.g. DISCOUNT_V2 or discount_v2)",
                     },
                     "application": {
                         "type": "string",
-                        "description": "AppConfig application name",
+                        "description": f"AppConfig application (default: {DEFAULT_APPLICATION})",
                     },
                     "environment": {
                         "type": "string",
-                        "description": "AppConfig environment (default: dev)",
+                        "description": f"AppConfig environment (default: {DEFAULT_ENVIRONMENT})",
                     },
                 },
-                "required": ["flag_name", "application"],
+                "required": ["flag_name"],
             },
         ),
         Tool(
@@ -65,14 +72,14 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "application": {
                         "type": "string",
-                        "description": "AppConfig application name",
+                        "description": f"AppConfig application (default: {DEFAULT_APPLICATION})",
                     },
                     "environment": {
                         "type": "string",
-                        "description": "AppConfig environment (default: dev)",
+                        "description": f"AppConfig environment (default: {DEFAULT_ENVIRONMENT})",
                     },
                 },
-                "required": ["application"],
+                "required": [],
             },
         ),
         Tool(
@@ -87,7 +94,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "flag_name": {
                         "type": "string",
-                        "description": "Feature flag name",
+                        "description": "Feature flag name (e.g. DISCOUNT_V2 or discount_v2)",
                     },
                     "new_value": {
                         "type": "string",
@@ -95,18 +102,18 @@ async def list_tools() -> list[Tool]:
                     },
                     "application": {
                         "type": "string",
-                        "description": "AppConfig application name",
+                        "description": f"AppConfig application (default: {DEFAULT_APPLICATION})",
                     },
                     "environment": {
                         "type": "string",
-                        "description": "AppConfig environment (default: dev)",
+                        "description": f"AppConfig environment (default: {DEFAULT_ENVIRONMENT})",
                     },
                     "reason": {
                         "type": "string",
                         "description": "Reason for the change",
                     },
                 },
-                "required": ["flag_name", "new_value", "application", "reason"],
+                "required": ["flag_name", "new_value", "reason"],
             },
         ),
     ]
@@ -125,103 +132,58 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         raise ValueError(f"Unknown tool: {name}")
 
 
+def _flag_client(args: dict) -> AppConfigFlagClient:
+    """AppConfig Data client for the application/environment in ``args`` (or the defaults)."""
+    return AppConfigFlagClient(
+        application=args.get("application")
+        or os.getenv("APPCONFIG_APPLICATION", DEFAULT_APPLICATION),
+        environment=args.get("environment")
+        or os.getenv("APPCONFIG_ENVIRONMENT", DEFAULT_ENVIRONMENT),
+        profile=os.getenv("APPCONFIG_CONFIGURATION", DEFAULT_PROFILE),
+        region=aws_region(),
+    )
+
+
 async def _get_flag(args: dict) -> list[TextContent]:
-    """Get a feature flag value."""
+    """Get a feature flag value ("on"/"off")."""
     flag_name = args["flag_name"]
-    application = args["application"]
-    environment = args.get("environment", "dev")
+    client = _flag_client(args)
+    where = f"{client.application}/{client.environment}"
 
     try:
-        client = boto3.client("appconfigdata")
-
-        # Start configuration session
-        session_response = client.start_configuration_session(
-            ApplicationIdentifier=application,
-            EnvironmentIdentifier=environment,
-            ConfigurationProfileIdentifier="feature-flags",
-        )
-
-        token = session_response["InitialConfigurationToken"]
-
-        # Get latest configuration
-        config_response = client.get_latest_configuration(ConfigurationToken=token)
-
-        # Parse configuration
-        config_data = json.loads(config_response["Configuration"].read())
-
-        # Get flag value
-        flag_value = config_data.get(flag_name, "NOT_FOUND")
-
-        return [
-            TextContent(
-                type="text",
-                text=f"Flag '{flag_name}' = '{flag_value}'",
-            )
-        ]
+        value = flag_state(client.get_flags(), flag_name)
+        if value is None:
+            text = f"Flag '{flag_name}' (key '{flag_key(flag_name)}') not found in {where}"
+        else:
+            text = f"Flag '{flag_name}' = '{value}' (AppConfig key '{flag_key(flag_name)}')"
+        return [TextContent(type="text", text=text)]
 
     except ClientError as e:
         if e.response["Error"]["Code"] == "ResourceNotFoundException":
             return [
                 TextContent(
                     type="text",
-                    text=f"Flag '{flag_name}' not found in {application}/{environment}",
+                    text=f"No deployed feature-flag configuration found in {where}",
                 )
             ]
-        return [
-            TextContent(
-                type="text",
-                text=f"Error getting flag: {e}",
-            )
-        ]
+        return [TextContent(type="text", text=f"Error getting flag: {e}")]
     except Exception as e:
-        return [
-            TextContent(
-                type="text",
-                text=f"Error getting flag: {e}",
-            )
-        ]
+        return [TextContent(type="text", text=f"Error getting flag: {e}")]
 
 
 async def _list_flags(args: dict) -> list[TextContent]:
-    """List all feature flags."""
-    application = args["application"]
-    environment = args.get("environment", "dev")
+    """List all feature flags with their on/off state."""
+    client = _flag_client(args)
+    where = f"{client.application}/{client.environment}"
 
     try:
-        client = boto3.client("appconfigdata")
-
-        # Start configuration session
-        session_response = client.start_configuration_session(
-            ApplicationIdentifier=application,
-            EnvironmentIdentifier=environment,
-            ConfigurationProfileIdentifier="feature-flags",
-        )
-
-        token = session_response["InitialConfigurationToken"]
-
-        # Get latest configuration
-        config_response = client.get_latest_configuration(ConfigurationToken=token)
-
-        # Parse configuration
-        config_data = json.loads(config_response["Configuration"].read())
-
-        # Format flags
-        formatted = json.dumps(config_data, indent=2)
-
-        return [
-            TextContent(
-                type="text",
-                text=f"Feature flags in {application}/{environment}:\n\n{formatted}",
-            )
-        ]
+        flags = client.get_flags()
+        states = {key: flag_state(flags, key) for key in flags}
+        formatted = json.dumps(states, indent=2)
+        return [TextContent(type="text", text=f"Feature flags in {where}:\n\n{formatted}")]
 
     except Exception as e:
-        return [
-            TextContent(
-                type="text",
-                text=f"Error listing flags: {e}",
-            )
-        ]
+        return [TextContent(type="text", text=f"Error listing flags: {e}")]
 
 
 async def _update_flag(args: dict) -> list[TextContent]:
@@ -272,7 +234,7 @@ async def _update_flag(args: dict) -> list[TextContent]:
 
 def main():
     """Run the MCP server."""
-    asyncio.run(stdio_server(app))
+    run_stdio(app)
 
 
 if __name__ == "__main__":
