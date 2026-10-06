@@ -25,7 +25,7 @@ def mock_alarm_event():
         "detail-type": "CloudWatch Alarm State Change",
         "time": "2026-10-05T12:00:00Z",
         "detail": {
-            "alarmName": "MiniDebugAssist-HighErrorRate",
+            "alarmName": "mini-debug-assist-error-alarm",
             "state": {"value": "ALARM", "reason": "Threshold Crossed: 10 errors"},
             "configuration": {
                 "metrics": [

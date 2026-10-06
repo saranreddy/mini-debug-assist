@@ -11,7 +11,10 @@ Deploys the debugging agent infrastructure:
 Maps to Uber's runtime jobs on Kubernetes with Buildkite CI.
 """
 
+import os
+
 from aws_cdk import (
+    IgnoreMode,
     RemovalPolicy,
     Stack,
 )
@@ -23,6 +26,9 @@ from aws_cdk import (
 )
 from aws_cdk import (
     aws_ec2 as ec2,
+)
+from aws_cdk import (
+    aws_ecr_assets as ecr_assets,
 )
 from aws_cdk import (
     aws_ecs as ecs,
@@ -44,24 +50,83 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-from .demo_app_stack import DemoAppStack
+from .demo_app_stack import ERROR_ALARM_NAME, DemoAppStack
+
+# Explicit rule name so scripts/smoke.py can look the rule up directly
+AGENT_TRIGGER_RULE_NAME = "mini-debug-assist-agent-trigger"
+
+# Name of the agent container (task definition container id, used in overrides)
+AGENT_CONTAINER_NAME = "AgentContainer"
+
+# Text fields of the CloudWatch "Alarm State Change" event handed to the agent task
+# as environment variables (agent/cli.py rebuilds the event from them). Each path is
+# a string in every alarm state-change event; ECS only accepts string env values, so
+# never pass a JSON object or array here.
+ALARM_EVENT_ENV_FIELDS = {
+    "ALARM_NAME": "$.detail.alarmName",
+    "ALARM_STATE": "$.detail.state.value",
+    "ALARM_REASON": "$.detail.state.reason",
+    "ALARM_TIME": "$.time",
+    "ALARM_REGION": "$.region",
+    "ALARM_ACCOUNT": "$.account",
+    "ALARM_EVENT_ID": "$.id",
+}
+
+# The agent image is built from the repo root (agent/Dockerfile copies pyproject.toml,
+# README.md, agent/, demo_app/, mcp_servers/, skills/, tests/ from there).
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+AGENT_DOCKERFILE = "agent/Dockerfile"
+
+# Kept out of the agent image build context: big, irrelevant, or secret files.
+# (Docker-style patterns, relative to the repo root.)
+AGENT_IMAGE_EXCLUDES = [
+    ".git",
+    ".github",
+    ".env",
+    ".venv",
+    "venv",
+    "**/node_modules",
+    "**/cdk.out",
+    "infra",
+    "docs",
+    "output",
+    "**/*.mp4",
+    "**/__pycache__",
+    "**/*.pyc",
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.ruff_cache",
+    ".coverage",
+    "htmlcov",
+    "**/*.egg-info",
+    "build",
+    "dist",
+]
 
 
 class AgentStack(Stack):
     """Stack for the debugging agent infrastructure."""
 
     def __init__(
-        self, scope: Construct, construct_id: str, demo_app_stack: DemoAppStack, **kwargs
+        self,
+        scope: Construct,
+        construct_id: str,
+        demo_app_stack: DemoAppStack,
+        github_repo: str,
+        github_token_secret_arn: str,
+        **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
         # ===== GitHub Token Secret =====
-        # Store GitHub token in Secrets Manager
-        self.github_token_secret = secretsmanager.Secret(
+        # Import the secret created by `make setup-secrets` by its COMPLETE ARN
+        # (with the 6-character suffix). ECS resolves secret fields by full ARN;
+        # from_secret_name_v2 only yields a partial ARN. infra/deploy_config.py
+        # looks the ARN up (`make deploy`) or uses a placeholder for offline synth.
+        self.github_token_secret = secretsmanager.Secret.from_secret_complete_arn(
             self,
             "GitHubToken",
-            secret_name="mini-debug-assist/github-token",
-            description="GitHub token for creating PRs",
+            github_token_secret_arn,
         )
 
         # ===== DynamoDB Deduplication Table =====
@@ -100,18 +165,15 @@ class AgentStack(Stack):
                     "bedrock:InvokeModelWithResponseStream",
                 ],
                 resources=[
-                    # Cross-region inference profiles for Claude 5 generation
-                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-sonnet-5-5",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-opus-5-5",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/global.anthropic.claude-sonnet-5-5",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/global.anthropic.claude-opus-5-5",
-                    # Direct model access
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-sonnet-5-5",
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-opus-5-5",
-                    # Wildcard for flexibility (supports Claude 4.x, 5.x)
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-*",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-*",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/global.anthropic.claude-*",
+                    # Inference profiles (us./global. prefixes, see agent/config.py).
+                    # System-defined profile ARNs include the account ID.
+                    f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/us.anthropic.claude-*",
+                    f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/global.anthropic.claude-*",
+                    # A cross-region profile routes to the foundation model in any of
+                    # its destination regions, so allow the model in every region.
+                    "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+                    # Global profiles authorize against a region-less model ARN.
+                    "arn:aws:bedrock:::foundation-model/anthropic.claude-*",
                 ],
             )
         )
@@ -137,13 +199,22 @@ class AgentStack(Stack):
                 sid="CloudWatchLogsRead",
                 actions=[
                     "logs:StartQuery",
-                    "logs:GetQueryResults",
                     "logs:DescribeLogStreams",
                     "logs:GetLogEvents",
                 ],
                 resources=[
                     demo_app_stack.log_group.log_group_arn,
                 ],
+            )
+        )
+
+        # GetQueryResults takes only a query ID, not a log group, so it can't be
+        # scoped to the demo log group: it needs "*". (StopQuery isn't used.)
+        self.agent_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="CloudWatchLogsQueryResults",
+                actions=["logs:GetQueryResults"],
+                resources=["*"],
             )
         )
 
@@ -197,22 +268,23 @@ class AgentStack(Stack):
         self.dedup_table.grant_read_write_data(self.agent_role)
 
         # ===== Build Agent Container Image =====
-        # Build Docker image from agent/ directory
-        import os
-
-        agent_dockerfile_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "agent"
-        )
-
+        # Build context = repo root, Dockerfile = agent/Dockerfile, so every COPY in the
+        # Dockerfile resolves. `cdk synth` only stages the (filtered) context into
+        # cdk.out; Docker runs at `cdk deploy`. LINUX_AMD64 matches Fargate's default
+        # x86_64 runtime, even when building on an Apple Silicon laptop.
         self.agent_image = ecs.ContainerImage.from_asset(
-            agent_dockerfile_path,
-            file="Dockerfile",
+            REPO_ROOT,
+            file=AGENT_DOCKERFILE,
+            exclude=AGENT_IMAGE_EXCLUDES,
+            ignore_mode=IgnoreMode.DOCKER,
+            platform=ecr_assets.Platform.LINUX_AMD64,
         )
 
         # ===== Agent Task Definition =====
         self.agent_task_def = ecs.FargateTaskDefinition(
             self,
             "AgentTaskDef",
+            family="mini-debug-assist-agent",
             cpu=512,
             memory_limit_mib=1024,
             task_role=self.agent_role,
@@ -220,7 +292,7 @@ class AgentStack(Stack):
 
         # Agent container with built image
         self.agent_container = self.agent_task_def.add_container(
-            "AgentContainer",
+            AGENT_CONTAINER_NAME,
             image=self.agent_image,
             logging=ecs.LogDriver.aws_logs(
                 stream_prefix="debug-agent",
@@ -236,10 +308,15 @@ class AgentStack(Stack):
                 "AGENT_TYPE": "python-web",
                 "DEMO_APP_LOG_GROUP": demo_app_stack.log_group.log_group_name,
                 "DEDUP_TABLE_NAME": self.dedup_table.table_name,
-                "GITHUB_REPO": os.getenv("GITHUB_REPO", ""),
+                # Validated in infra/deploy_config.py (never empty or the placeholder)
+                "GITHUB_REPO": github_repo,
             },
             secrets={
-                "GITHUB_TOKEN": ecs.Secret.from_secrets_manager(self.github_token_secret),
+                # The secret is JSON {"token": ..., "repo": ...} (scripts/setup_github_token.sh);
+                # inject only the token, not the whole JSON document.
+                "GITHUB_TOKEN": ecs.Secret.from_secrets_manager(
+                    self.github_token_secret, field="token"
+                ),
             },
         )
 
@@ -248,14 +325,16 @@ class AgentStack(Stack):
         self.alarm_trigger_rule = events.Rule(
             self,
             "AlarmTriggerRule",
+            rule_name=AGENT_TRIGGER_RULE_NAME,
             description="Trigger debug agent when CloudWatch alarm enters ALARM state",
             event_pattern=events.EventPattern(
                 source=["aws.cloudwatch"],
                 detail_type=["CloudWatch Alarm State Change"],
+                # Only the demo app's error alarm going into ALARM, so no other
+                # alarm in the account can launch the agent.
                 detail={
+                    "alarmName": [ERROR_ALARM_NAME],
                     "state": {"value": ["ALARM"]},
-                    # Optional: filter for specific alarms
-                    # "alarmName": [{"prefix": "MiniDebugAssist-"}]
                 },
             ),
             enabled=True,
@@ -266,19 +345,23 @@ class AgentStack(Stack):
             targets.EcsTask(
                 cluster=demo_app_stack.cluster,
                 task_definition=self.agent_task_def,
+                # Public subnets and no NAT gateway: the task needs a public IP to pull
+                # its image from ECR and reach Bedrock, Secrets Manager, and GitHub.
                 subnet_selection=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
+                assign_public_ip=True,
+                # String fields only: EventBridge inserts a JSON object unquoted, and
+                # ECS RunTask rejects non-string environment values.
                 container_overrides=[
                     targets.ContainerOverride(
-                        container_name="AgentContainer",
+                        container_name=AGENT_CONTAINER_NAME,
                         environment=[
-                            targets.TaskEnvironmentVariable(
-                                name="ISSUE_SOURCE",
-                                value="alarm",
-                            ),
-                            targets.TaskEnvironmentVariable(
-                                name="ALARM_EVENT_JSON",
-                                value=events.EventField.from_path("$"),
-                            ),
+                            targets.TaskEnvironmentVariable(name="ISSUE_SOURCE", value="alarm"),
+                            *[
+                                targets.TaskEnvironmentVariable(
+                                    name=name, value=events.EventField.from_path(path)
+                                )
+                                for name, path in ALARM_EVENT_ENV_FIELDS.items()
+                            ],
                         ],
                     )
                 ],

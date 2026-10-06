@@ -1,4 +1,4 @@
-.PHONY: help doctor bootstrap deploy destroy setup-secrets trigger-bug smoke demo-local test lint format clean e2e-local
+.PHONY: help doctor bootstrap deploy destroy setup-secrets trigger-bug reset-dedup smoke demo-local test lint format clean e2e-local
 
 # Default target
 help:
@@ -17,6 +17,7 @@ help:
 	@echo "Demo:"
 	@echo "  make demo-local     - Run full pipeline in mock mode (no AWS)"
 	@echo "  make trigger-bug    - Trigger demo app bug to wake the agent"
+	@echo "  make reset-dedup    - Clear dedup records so the agent reruns right away"
 	@echo ""
 	@echo "Development:"
 	@echo "  make test           - Run test suite"
@@ -31,15 +32,20 @@ doctor:
 
 bootstrap:
 	@echo "Bootstrapping CDK (one-time setup)..."
-	cd infra && cdk bootstrap
+	cd infra && GITHUB_TOKEN_SECRET_ARN=placeholder cdk bootstrap
 
+# deploy_config.py checks GITHUB_REPO and that the GitHub token secret exists
+# (else: "run make setup-secrets first"), then passes the secret's complete ARN
+# to CDK, which ECS needs to inject the token.
 deploy:
 	@echo "Deploying agent infrastructure..."
-	cd infra && cdk deploy --all --require-approval never
+	@python3 infra/deploy_config.py
+	@ARN="$$(python3 infra/deploy_config.py --secret-arn)" && \
+		cd infra && GITHUB_TOKEN_SECRET_ARN="$$ARN" cdk deploy --all --require-approval never
 
 destroy:
 	@echo "Destroying all resources..."
-	cd infra && cdk destroy --all --force
+	cd infra && GITHUB_TOKEN_SECRET_ARN=placeholder cdk destroy --all --force
 
 setup-secrets:
 	@echo "Setting up GitHub token in Secrets Manager..."
@@ -48,6 +54,10 @@ setup-secrets:
 trigger-bug:
 	@echo "Triggering demo app bug..."
 	@python3 scripts/trigger_bug.py
+
+reset-dedup:
+	@echo "Clearing agent dedup records..."
+	@python3 scripts/reset_dedup.py
 
 smoke:
 	@echo "Running post-deployment smoke tests..."

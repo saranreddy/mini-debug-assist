@@ -11,16 +11,46 @@ MCP Tools:
 
 import asyncio
 import json
+import os
 from datetime import datetime, timedelta
 from typing import Any
 
 import boto3
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
+
+from mcp_servers._runtime import aws_region, run_stdio
 
 # Initialize MCP server
 app = Server("cloudwatch-logs-mcp")
+
+
+INSIGHTS_COMMANDS = ("fields", "filter", "stats", "sort", "limit", "parse", "display", "dedup")
+
+
+def _log_group(args: dict) -> str:
+    """Log group from the arguments, else DEMO_APP_LOG_GROUP (set on the agent task)."""
+    log_group = args.get("log_group") or os.getenv("DEMO_APP_LOG_GROUP")
+    if not log_group:
+        raise ValueError("No log_group given and DEMO_APP_LOG_GROUP is not set")
+    return log_group
+
+
+def insights_query(query: str) -> str:
+    """
+    Accept either a Logs Insights query or plain search text.
+
+    The LLM sometimes passes just a phrase (e.g. "KeyError"); that becomes a
+    substring filter on @message instead of an invalid query.
+    """
+    text = query.strip()
+    if "|" in text or text.split(" ", 1)[0].lower() in INSIGHTS_COMMANDS:
+        return text
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        f'fields @timestamp, @message | filter @message like "{escaped}" '
+        "| sort @timestamp desc | limit 50"
+    )
 
 
 @app.list_tools()
@@ -39,7 +69,9 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "log_group": {
                         "type": "string",
-                        "description": "Log group name (e.g., '/aws/ecs/my-service')",
+                        "description": (
+                            "Log group name (default: DEMO_APP_LOG_GROUP, the demo app's logs)"
+                        ),
                     },
                     "query": {
                         "type": "string",
@@ -57,8 +89,12 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "End time (ISO format, default: now)",
                     },
+                    "time_range_minutes": {
+                        "type": "number",
+                        "description": "Look back this many minutes (used if no start_time)",
+                    },
                 },
-                "required": ["log_group", "query"],
+                "required": ["query"],
             },
         ),
         Tool(
@@ -100,14 +136,15 @@ async def _query_logs(args: dict) -> list[TextContent]:
     Note: This is a simplified implementation. Production would handle
     query polling, pagination, and result formatting more robustly.
     """
-    log_group = args["log_group"]
-    query = args["query"]
+    log_group = _log_group(args)
+    query = insights_query(args["query"])
 
     # Parse time range
     if "start_time" in args:
         start_time = datetime.fromisoformat(args["start_time"])
     else:
-        start_time = datetime.now() - timedelta(hours=1)
+        minutes = float(args.get("time_range_minutes") or 60)
+        start_time = datetime.now() - timedelta(minutes=minutes)
 
     if "end_time" in args:
         end_time = datetime.fromisoformat(args["end_time"])
@@ -115,7 +152,7 @@ async def _query_logs(args: dict) -> list[TextContent]:
         end_time = datetime.now()
 
     try:
-        client = boto3.client("logs")
+        client = boto3.client("logs", region_name=aws_region())
 
         # Start query
         response = client.start_query(
@@ -173,11 +210,11 @@ async def _query_logs(args: dict) -> list[TextContent]:
 
 async def _get_log_streams(args: dict) -> list[TextContent]:
     """List log streams in a log group."""
-    log_group = args["log_group"]
-    limit = args.get("limit", 50)
+    log_group = _log_group(args)
+    limit = int(args.get("limit", 50))
 
     try:
-        client = boto3.client("logs")
+        client = boto3.client("logs", region_name=aws_region())
 
         response = client.describe_log_streams(
             logGroupName=log_group,
@@ -218,7 +255,7 @@ async def _get_log_streams(args: dict) -> list[TextContent]:
 
 def main():
     """Run the MCP server."""
-    asyncio.run(stdio_server(app))
+    run_stdio(app)
 
 
 if __name__ == "__main__":

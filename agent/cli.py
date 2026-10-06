@@ -7,9 +7,11 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -40,34 +42,82 @@ def load_issue_from_file(filepath: str) -> dict[Any, Any]:
         sys.exit(1)
 
 
-def load_issue_from_aws(issue_id: str, config) -> dict:
+# Environment variables set by the EventBridge rule in infra/stacks/agent_stack.py
+# (ALARM_EVENT_ENV_FIELDS). Each holds one text field of the CloudWatch
+# "Alarm State Change" event, because ECS only accepts string env values.
+ALARM_ENV_NAME = "ALARM_NAME"
+ALARM_ENV_FIELDS = (
+    "ALARM_NAME",
+    "ALARM_STATE",
+    "ALARM_REASON",
+    "ALARM_TIME",
+    "ALARM_REGION",
+    "ALARM_ACCOUNT",
+    "ALARM_EVENT_ID",
+)
+
+
+def alarm_event_from_env(environ: Mapping[str, str] | None = None) -> dict[str, Any] | None:
+    """
+    Rebuild the CloudWatch alarm event from the task's environment.
+
+    Preferred: the per-field variables ALARM_NAME, ALARM_STATE, ALARM_REASON,
+    ALARM_TIME, ALARM_REGION, ALARM_ACCOUNT, ALARM_EVENT_ID (set by EventBridge).
+    Fallback: ALARM_EVENT_JSON holding the whole event as a JSON string (local
+    runs, older task definitions). Returns None if neither is present.
+    """
+    env = os.environ if environ is None else environ
+
+    if env.get(ALARM_ENV_NAME):
+        return {
+            "version": "0",
+            "id": env.get("ALARM_EVENT_ID", ""),
+            "detail-type": "CloudWatch Alarm State Change",
+            "source": "aws.cloudwatch",
+            "account": env.get("ALARM_ACCOUNT", ""),
+            "time": env.get("ALARM_TIME", ""),
+            "region": env.get("ALARM_REGION", ""),
+            "detail": {
+                "alarmName": env[ALARM_ENV_NAME],
+                "state": {
+                    "value": env.get("ALARM_STATE", "ALARM"),
+                    "reason": env.get("ALARM_REASON", ""),
+                },
+            },
+        }
+
+    alarm_event_json = env.get("ALARM_EVENT_JSON")
+    if alarm_event_json:
+        event = json.loads(alarm_event_json)
+        if not isinstance(event, dict):
+            raise ValueError("ALARM_EVENT_JSON must be a JSON object")
+        return event
+
+    return None
+
+
+def load_issue_from_aws(issue_id: str | None, config) -> dict:
     """
     Load issue from AWS CloudWatch alarm event.
 
     Reads alarm data from environment variables set by EventBridge:
     - ISSUE_SOURCE: "alarm"
-    - ALARM_EVENT_JSON: The full CloudWatch alarm event
-
-    Or falls back to parsing issue_id if provided.
+    - ALARM_NAME, ALARM_STATE, ALARM_REASON, ALARM_TIME, ALARM_REGION,
+      ALARM_ACCOUNT, ALARM_EVENT_ID (or ALARM_EVENT_JSON with the whole event)
     """
-    import json
-
-    # Try to load from environment (event-driven invocation)
-    issue_source = os.getenv("ISSUE_SOURCE")
-
-    if issue_source == "alarm":
-        alarm_event_json = os.getenv("ALARM_EVENT_JSON")
-        if alarm_event_json:
-            try:
-                alarm_event = json.loads(alarm_event_json)
-                return _parse_alarm_event(alarm_event)
-            except Exception as e:
-                logger.error(f"Error parsing alarm event: {e}")
+    if os.getenv("ISSUE_SOURCE") == "alarm":
+        try:
+            alarm_event = alarm_event_from_env()
+        except Exception as e:
+            logger.error(f"Error parsing alarm event: {e}")
+            alarm_event = None
+        if alarm_event is not None:
+            return _parse_alarm_event(alarm_event)
 
     # Fall back to querying by issue_id
     logger.error(
         "No alarm event in environment and direct query by ID not implemented. "
-        "Set ISSUE_SOURCE=alarm and ALARM_EVENT_JSON for event-driven mode."
+        "Set ISSUE_SOURCE=alarm and ALARM_NAME (or ALARM_EVENT_JSON) for event-driven mode."
     )
     sys.exit(1)
 
@@ -94,30 +144,19 @@ def _parse_alarm_event(alarm_event: dict) -> dict:
     state_reason = detail.get("state", {}).get("reason", "")
     timestamp = alarm_event.get("time", "")
 
-    # Extract metric info
-    configuration = detail.get("configuration", {})
-    metric_name = (
-        configuration.get("metrics", [{}])[0]
-        .get("metricStat", {})
-        .get("metric", {})
-        .get("name", "")
-    )
-    namespace = (
-        configuration.get("metrics", [{}])[0]
-        .get("metricStat", {})
-        .get("metric", {})
-        .get("namespace", "")
-    )
-    dimensions = (
-        configuration.get("metrics", [{}])[0]
-        .get("metricStat", {})
-        .get("metric", {})
-        .get("dimensions", {})
-    )
+    # Extract metric info (absent when the event was rebuilt from env vars)
+    metrics = detail.get("configuration", {}).get("metrics") or [{}]
+    metric = metrics[0].get("metricStat", {}).get("metric", {})
+    metric_name = metric.get("name", "")
+    namespace = metric.get("namespace", "")
+    dimensions = metric.get("dimensions", {}) or {}
 
-    # Parse dimensions for context
-    error_type = dimensions.get("error_type", "Unknown")
-    endpoint = dimensions.get("endpoint", "Unknown")
+    # Optional narrowing hints. Empty when the alarm has no dimensions (the
+    # deployed alarm has none): context_collector then queries all level=ERROR
+    # logs and error traces. A placeholder like "Unknown" would filter on
+    # exception_type = "Unknown" and find nothing.
+    error_type = dimensions.get("error_type", "")
+    endpoint = dimensions.get("endpoint", "")
 
     return {
         "issue_id": f"ALARM-{alarm_name}-{timestamp[:10]}",
@@ -127,6 +166,9 @@ def _parse_alarm_event(alarm_event: dict) -> dict:
         "alarm_state": state_value,
         "alarm_reason": state_reason,
         "timestamp": timestamp,
+        "alarm_event_id": alarm_event.get("id", ""),
+        "region": alarm_event.get("region", ""),
+        "account": alarm_event.get("account", ""),
         "metric_name": metric_name,
         "metric_namespace": namespace,
         "error_type": error_type,

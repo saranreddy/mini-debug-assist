@@ -8,6 +8,19 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
+DEFAULT_REGION = "us-east-1"
+
+
+def aws_region() -> str:
+    """
+    Region for every boto3 client the agent creates.
+
+    AWS_REGION is set on the ECS task (infra/stacks/agent_stack.py); the image no
+    longer hardcodes AWS_DEFAULT_REGION. The default models are ``us.`` cross-region
+    inference profiles, which only work from a US region (us-east-1 recommended).
+    """
+    return os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or DEFAULT_REGION
+
 
 @dataclass
 class AgentConfig:
@@ -73,7 +86,7 @@ class AgentConfig:
         return cls(
             mode=mode_literal,
             agent_type=os.getenv("AGENT_TYPE", "python-web"),
-            bedrock_region=os.getenv("AWS_REGION", "us-east-1"),
+            bedrock_region=aws_region(),
             model_classify=os.getenv("MODEL_CLASSIFY", "us.anthropic.claude-sonnet-5-5"),
             model_subagent=os.getenv("MODEL_SUBAGENT", "us.anthropic.claude-sonnet-5-5"),
             model_fix=os.getenv("MODEL_FIX", "us.anthropic.claude-opus-5-5"),

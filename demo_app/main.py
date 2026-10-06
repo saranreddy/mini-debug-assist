@@ -14,17 +14,25 @@ import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pythonjsonlogger import jsonlogger
 
 from demo_app.config import config
+
+try:  # python-json-logger >= 3.1
+    from pythonjsonlogger.json import JsonFormatter
+except ImportError:  # python-json-logger 2.x
+    from pythonjsonlogger.jsonlogger import JsonFormatter
 
 # ===== Structured JSON Logging =====
 # Maps to Uber's ClickHouse-based logging platform that the agent queries
 
 logger = logging.getLogger("demo_app")
 log_handler = logging.StreamHandler()
-formatter = jsonlogger.JsonFormatter(
-    "%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d"
+# The level is emitted as "level" (not "levelname") because the CloudWatch metric
+# filter ({ $.level = "ERROR" }), the dashboard, and the agent's Logs Insights
+# queries all filter on that field.
+formatter = JsonFormatter(
+    "%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d",
+    rename_fields={"levelname": "level"},
 )
 log_handler.setFormatter(formatter)
 logger.addHandler(log_handler)
@@ -40,21 +48,10 @@ app = FastAPI(
 )
 
 
-# ===== Optional AWS X-Ray Tracing =====
-# Maps to Uber's Jaeger distributed tracing (queried via jaeger MCP)
-
-USE_XRAY = config.use_aws and True  # Enable if you have X-Ray daemon
-
-if USE_XRAY:
-    try:
-        from aws_xray_sdk.core import xray_recorder
-
-        xray_recorder.configure(service="MiniDebugAssist-Demo")
-        # Note: FastAPI support is limited, but this shows the pattern
-        logger.info("X-Ray tracing enabled")
-    except ImportError:
-        logger.warning("aws-xray-sdk not installed, tracing disabled")
-        USE_XRAY = False
+# ===== Tracing =====
+# The demo app does not emit X-Ray traces (no X-Ray SDK or daemon/ADOT sidecar).
+# The agent investigates from CloudWatch Logs, which carry the stack trace.
+# See README "X-Ray" for how to add tracing.
 
 
 # ===== Middleware for logging =====

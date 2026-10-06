@@ -12,13 +12,32 @@ Uber's output: diff with Summary (Problem/Fix/Flipr Gating/Test Plan)
 """
 
 import logging
+import re
+from datetime import UTC, datetime
 
 from github.InputGitTreeElement import InputGitTreeElement
 
 from agent.config import AgentConfig
+from agent.patching import PatchError, patch_file_content
 from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+
+def fix_branch_name(state: AgentState) -> str:
+    """
+    ``fix/debug-assist-<issue id>-<suffix>``.
+
+    The suffix is the first 8 characters of the EventBridge event id when the
+    run came from an alarm (unique per alarm state change), else a UTC timestamp.
+    Only characters that are safe in a git ref are kept.
+    """
+    event_id = str(state.issue_data.get("alarm_event_id") or "")
+    suffix = re.sub(r"[^a-z0-9]", "", event_id.lower())[:8]
+    if not suffix:
+        suffix = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+    issue = re.sub(r"[^a-z0-9._-]+", "-", state.issue_id.lower()).strip("-.") or "issue"
+    return f"fix/debug-assist-{issue}-{suffix}"
 
 
 def create_diff_node(state: AgentState, config: AgentConfig) -> AgentState:
@@ -77,8 +96,9 @@ def _create_github_pr(state: AgentState, config: AgentConfig) -> str | None:
         default_branch = repo.default_branch
         base_sha = repo.get_branch(default_branch).commit.sha
 
-        # Branch name
-        branch_name = f"fix/debug-assist-{state.issue_id.lower()}"
+        # Branch name: unique per investigation, so a second alarm on the same
+        # day doesn't reuse (and fail to fast-forward) an earlier fix branch.
+        branch_name = fix_branch_name(state)
         logger.info(f"Creating branch {branch_name} from {default_branch} @ {base_sha[:8]}")
 
         # Create new branch (via API)
@@ -114,7 +134,8 @@ def _create_github_pr(state: AgentState, config: AgentConfig) -> str | None:
                 logger.warning("Skipping change with missing file or diff")
                 continue
 
-            # Get current file content from base branch
+            # Get current file content from base branch (None = new file)
+            current_content: str | None
             try:
                 file_content = repo.get_contents(file_path, ref=default_branch)
                 if isinstance(file_content, list):
@@ -122,55 +143,14 @@ def _create_github_pr(state: AgentState, config: AgentConfig) -> str | None:
                 current_content = file_content.decoded_content.decode("utf-8")
             except Exception as e:
                 logger.warning(f"File {file_path} not found in base branch, assuming new file: {e}")
-                current_content = ""
+                current_content = None
 
-            # Apply unified diff to get new content
-            # For simplicity, we'll use the patch command via subprocess
-            import subprocess
-            import tempfile
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                # Write current content
-                current_file = f"{tmpdir}/current"
-                with open(current_file, "w") as f:
-                    f.write(current_content)
-
-                # Write diff
-                diff_file = f"{tmpdir}/fix.patch"
-                with open(diff_file, "w") as f:
-                    f.write(diff_content)
-
-                # Apply patch
-                patch_result = subprocess.run(
-                    ["patch", "-o", f"{tmpdir}/patched", current_file, diff_file],
-                    capture_output=True,
-                    text=True,
-                )
-
-                if patch_result.returncode != 0:
-                    err = patch_result.stderr
-                    logger.warning(
-                        f"Patch failed for {file_path}, trying alternative method: {err}"
-                    )
-                    # Fallback: try patch stdin
-                    subprocess.run(["cp", current_file, f"{tmpdir}/patched"], check=True)
-                    patch_result2 = subprocess.run(
-                        ["patch", f"{tmpdir}/patched"],
-                        input=diff_content,
-                        capture_output=True,
-                        text=True,
-                        cwd=tmpdir,
-                    )
-
-                    if patch_result2.returncode != 0:
-                        logger.error(
-                            f"Failed to apply patch for {file_path}: {patch_result2.stderr}"
-                        )
-                        continue
-
-                # Read patched content
-                with open(f"{tmpdir}/patched") as f:
-                    new_content = f.read()
+            # Apply the unified diff with git apply (git is in the agent image)
+            try:
+                new_content = patch_file_content(current_content, diff_content, file_path)
+            except PatchError as e:
+                logger.error(f"Failed to apply patch for {file_path}: {e}")
+                continue
 
             # Create blob for new content
             blob = repo.create_git_blob(new_content, "utf-8")

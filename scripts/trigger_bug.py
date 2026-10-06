@@ -13,6 +13,11 @@ import time
 
 import requests
 
+# The alarm fires at 10 errors in a 5-minute window. Send 20 so a few failed or
+# slow requests, or errors split across two metric periods, still trip it.
+ALARM_THRESHOLD = 10
+DEFAULT_ERROR_COUNT = 20
+
 
 def get_demo_app_url():
     """Get demo app URL from CDK outputs."""
@@ -23,7 +28,7 @@ def get_demo_app_url():
                 "cloudformation",
                 "describe-stacks",
                 "--stack-name",
-                "MiniDebugAssist-DemoAppStack",
+                "MiniDebugAssist-DemoApp",
             ],
             capture_output=True,
             text=True,
@@ -52,7 +57,7 @@ def get_demo_app_url():
         return None
 
 
-def trigger_errors(url, count=12):
+def trigger_errors(url, count=DEFAULT_ERROR_COUNT):
     """Trigger errors by calling /user/3 endpoint."""
     print(f"\n🐛 Triggering {count} errors at {url}/user/3...")
 
@@ -76,7 +81,7 @@ def trigger_errors(url, count=12):
 
 
 def get_agent_task_arn():
-    """Get the agent ECS task ARN (if running)."""
+    """Get the agent ECS task ARN (if running or recently ran)."""
     try:
         result = subprocess.run(
             [
@@ -85,8 +90,10 @@ def get_agent_task_arn():
                 "list-tasks",
                 "--cluster",
                 "mini-debug-assist-cluster",
-                "--service-name",
+                "--family",
                 "mini-debug-assist-agent",
+                "--desired-status",
+                "RUNNING",
             ],
             capture_output=True,
             text=True,
@@ -120,13 +127,13 @@ def main():
     # Trigger errors
     errors = trigger_errors(url)
 
-    if errors < 10:
-        print(f"\n⚠️  Only triggered {errors} errors (need 10 for alarm)")
+    if errors < ALARM_THRESHOLD:
+        print(f"\n⚠️  Only triggered {errors} errors (need {ALARM_THRESHOLD} for alarm)")
         print("   Alarm may not trigger. Try running again.")
     else:
         print(f"\n✅ Triggered {errors} errors!")
 
-    print("\n⏱️  Alarm threshold: 10 errors in 5 minutes")
+    print(f"\n⏱️  Alarm threshold: {ALARM_THRESHOLD} errors in 5 minutes")
     print("   Wait ~1 minute for CloudWatch to evaluate the alarm...")
 
     # Wait a bit

@@ -399,7 +399,7 @@ python mcp_servers/cloudwatch_logs.py
 
 ```bash
 # Synthesize (doesn't deploy)
-make synth
+cd infra && cdk synth && cd ..
 
 # Review generated CloudFormation
 cat infra/cdk.out/MiniDebugAssist-DemoApp.template.json

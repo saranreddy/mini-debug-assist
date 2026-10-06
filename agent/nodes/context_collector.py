@@ -29,7 +29,8 @@ def context_collector_node(state: AgentState, config: AgentConfig) -> AgentState
 
     In real mode:
     - Queries CloudWatch Logs Insights for recent errors
-    - Fetches X-Ray traces for the affected requests
+    - Fetches X-Ray traces only if XRAY_TRACES_ENABLED=true (the demo app is
+      not instrumented for X-Ray, so by default this step is skipped)
     - Retrieves code context via MCP github server
 
     In mock mode:
@@ -54,7 +55,14 @@ def context_collector_node(state: AgentState, config: AgentConfig) -> AgentState
     else:
         # Real mode: Query AWS
         state.logs = _fetch_cloudwatch_logs(state.issue_data, config)
-        state.traces = _fetch_xray_traces(state.issue_data, config)
+        if xray_traces_enabled():
+            state.traces = _fetch_xray_traces(state.issue_data, config)
+        else:
+            logger.info(
+                "Skipping X-Ray traces: the demo app emits none "
+                "(set XRAY_TRACES_ENABLED=true once the service is instrumented)"
+            )
+            state.traces = []
         state.code_context = _fetch_code_context(state.issue_data, config)
 
         # Prune logs to avoid context bloat
@@ -152,6 +160,11 @@ def _fetch_cloudwatch_logs(issue_data: dict[str, Any], config: AgentConfig) -> l
     except Exception as e:
         logger.error(f"Error fetching CloudWatch logs: {e}")
         return []
+
+
+def xray_traces_enabled() -> bool:
+    """X-Ray collection is opt-in: the demo app has no X-Ray SDK or daemon sidecar."""
+    return os.getenv("XRAY_TRACES_ENABLED", "false").lower() == "true"
 
 
 def _fetch_xray_traces(issue_data: dict[str, Any], config: AgentConfig) -> list[dict]:

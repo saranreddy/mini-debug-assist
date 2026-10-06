@@ -10,9 +10,13 @@ Checks:
 - Bedrock model access for configured models
 """
 
+import importlib.util
 import json
 import subprocess
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def check_command(cmd, name, install_hint):
@@ -96,6 +100,64 @@ def check_bedrock_access():
     return all_ok, "\n".join(results)
 
 
+def resolve_region():
+    """The region `make deploy` will use: env vars first, then `aws configure get region`."""
+    import os
+
+    for var in ("AWS_REGION", "AWS_DEFAULT_REGION", "CDK_DEFAULT_REGION"):
+        if os.environ.get(var):
+            return os.environ[var]
+    try:
+        result = subprocess.run(
+            ["aws", "configure", "get", "region"], capture_output=True, text=True, timeout=10
+        )
+        return result.stdout.strip() or None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def check_region(region):
+    """
+    Warn when the region is not a US one. The default models are `us.` cross-region
+    inference profiles, which can only be invoked from US regions (us-east-1 is
+    recommended). Informational: it doesn't fail the doctor run.
+    """
+    if not region:
+        return False, (
+            "⚠️  No AWS region configured. Set one, e.g. `aws configure set region us-east-1`"
+        )
+    if not region.startswith("us-"):
+        return False, (
+            f"⚠️  Region {region} is not a US region. The default Bedrock models are `us.` "
+            "inference profiles, which only work from US regions. Deploy to us-east-1 "
+            "(recommended): `aws configure set region us-east-1`."
+        )
+    return True, f"✅ Region: {region}"
+
+
+def check_github_repo():
+    """
+    Check GITHUB_REPO (the fork the agent opens PRs in), using the same rules as
+    `make deploy` (infra/deploy_config.py). Informational only: it is normally set in
+    .env at the setup-secrets step, after this check runs for the first time.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "deploy_config", REPO_ROOT / "infra" / "deploy_config.py"
+    )
+    if spec is None or spec.loader is None:
+        return False, "⚠️  Could not load infra/deploy_config.py"
+    deploy_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(deploy_config)
+    try:
+        repo = deploy_config.resolve_github_repo()
+    except deploy_config.DeployConfigError:
+        return (
+            False,
+            "⚠️  GITHUB_REPO not set yet: set it in .env before make deploy",
+        )
+    return True, f"✅ GITHUB_REPO: {repo} (the agent opens PRs here)"
+
+
 def main():
     """Run all checks."""
     print("🔍 Mini Debug Assist - Prerequisites Check\n")
@@ -119,38 +181,26 @@ def main():
     # Node.js
     ok, msg = check_command(["node", "--version"], "Node.js", "https://nodejs.org/")
     checks.append((ok, msg))
-    if ok:
-        print(f"✅ Node.js {msg}")
-    else:
-        print(msg)
+    print(msg if not ok else f"✅ Node.js: {msg}")
 
     # CDK
     ok, msg = check_command(["cdk", "--version"], "AWS CDK", "npm install -g aws-cdk")
     checks.append((ok, msg))
-    if ok:
-        print(f"✅ AWS CDK {msg}")
-    else:
-        print(msg)
+    print(msg if not ok else f"✅ AWS CDK: {msg}")
 
     # Docker
     ok, msg = check_command(
         ["docker", "--version"], "Docker", "https://docs.docker.com/get-docker/"
     )
     checks.append((ok, msg))
-    if ok:
-        print(f"✅ Docker {msg}")
-    else:
-        print(msg)
+    print(msg if not ok else f"✅ Docker: {msg}")
 
     # Python
     ok, msg = check_command(
         [sys.executable, "--version"], "Python", "https://www.python.org/downloads/"
     )
     checks.append((ok, msg))
-    if ok:
-        print(f"✅ Python {msg}")
-    else:
-        print(msg)
+    print(msg if not ok else f"✅ Python: {msg}")
 
     # Python dependencies
     try:
@@ -165,6 +215,16 @@ def main():
         print(msg)
         checks.append((False, msg))
 
+    # Region (informational warning, not counted)
+    region = resolve_region()
+    _, msg = check_region(region)
+    print(msg)
+    if region:
+        import os
+
+        # Check Bedrock in the region the agent will run in
+        os.environ.setdefault("AWS_REGION", region)
+
     # Bedrock access (only if AWS credentials work)
     if checks[1][0]:  # AWS credentials check passed
         print("\n🔑 Checking Bedrock model access...")
@@ -173,6 +233,11 @@ def main():
         print(msg)
     else:
         print("\n⏭️  Skipping Bedrock check (AWS credentials not configured)")
+
+    # GITHUB_REPO (informational; not counted, make deploy enforces it)
+    print()
+    _, msg = check_github_repo()
+    print(msg)
 
     # Summary
     print("\n" + "=" * 60)

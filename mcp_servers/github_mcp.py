@@ -10,15 +10,16 @@ MCP Tools:
 - create_pr: Create a pull request (write operation)
 """
 
-import asyncio
 import base64
+import json
 import os
 from typing import Any
 
 from github import Github
 from mcp.server import Server
-from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
+
+from mcp_servers._runtime import run_stdio
 
 # Initialize MCP server
 app = Server("github-mcp")
@@ -38,6 +39,14 @@ def _get_github_client() -> Github:
     return _gh_client
 
 
+def _repo_name(args: dict) -> str:
+    """Repository from the tool arguments, else GITHUB_REPO (set on the agent task)."""
+    repo_name = args.get("repo") or os.getenv("GITHUB_REPO")
+    if not repo_name:
+        raise ValueError("No repository given and GITHUB_REPO is not set")
+    return repo_name
+
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     """List available tools."""
@@ -55,16 +64,24 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Search query (supports GitHub code search syntax)",
                     },
+                    "pattern": {
+                        "type": "string",
+                        "description": "Alias for query (the agent's tool spec uses this name)",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Limit the search to this path",
+                    },
                     "repo": {
                         "type": "string",
-                        "description": "Repository (e.g., 'owner/repo')",
+                        "description": "Repository 'owner/repo' (default: GITHUB_REPO)",
                     },
                     "max_results": {
                         "type": "number",
                         "description": "Max results to return (default: 10)",
                     },
                 },
-                "required": ["query", "repo"],
+                "required": [],
             },
         ),
         Tool(
@@ -75,7 +92,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "repo": {
                         "type": "string",
-                        "description": "Repository (e.g., 'owner/repo')",
+                        "description": "Repository 'owner/repo' (default: GITHUB_REPO)",
                     },
                     "path": {
                         "type": "string",
@@ -83,10 +100,10 @@ async def list_tools() -> list[Tool]:
                     },
                     "ref": {
                         "type": "string",
-                        "description": "Git ref (branch, tag, commit SHA, default: main)",
+                        "description": "Git ref (branch, tag, SHA; default: repo default branch)",
                     },
                 },
-                "required": ["repo", "path"],
+                "required": ["path"],
             },
         ),
         Tool(
@@ -99,7 +116,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "repo": {
                         "type": "string",
-                        "description": "Repository (e.g., 'owner/repo')",
+                        "description": "Repository 'owner/repo' (default: GITHUB_REPO)",
                     },
                     "title": {
                         "type": "string",
@@ -115,10 +132,10 @@ async def list_tools() -> list[Tool]:
                     },
                     "base": {
                         "type": "string",
-                        "description": "Base branch (default: main)",
+                        "description": "Base branch (default: the repo default branch)",
                     },
                 },
-                "required": ["repo", "title", "body", "head"],
+                "required": ["title", "body", "head"],
             },
         ),
     ]
@@ -139,15 +156,19 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 
 async def _search_code(args: dict) -> list[TextContent]:
     """Search code in repository."""
-    query = args["query"]
-    repo_name = args["repo"]
-    max_results = args.get("max_results", 10)
+    max_results = int(args.get("max_results", 10))
 
     try:
+        query = args.get("query") or args.get("pattern")
+        if not query:
+            raise ValueError("search_code needs 'query' (or 'pattern')")
+        repo_name = _repo_name(args)
         gh = _get_github_client()
 
         # Build search query
         search_query = f"{query} repo:{repo_name}"
+        if args.get("file_path"):
+            search_query += f" path:{args['file_path']}"
 
         # Search
         results = gh.search_code(search_query)
@@ -162,8 +183,6 @@ async def _search_code(args: dict) -> list[TextContent]:
                     "url": result.html_url,
                 }
             )
-
-        import json
 
         formatted = json.dumps(formatted_results, indent=2)
 
@@ -185,13 +204,12 @@ async def _search_code(args: dict) -> list[TextContent]:
 
 async def _read_file(args: dict) -> list[TextContent]:
     """Read a file from repository."""
-    repo_name = args["repo"]
     path = args["path"]
-    ref = args.get("ref", "main")
 
     try:
         gh = _get_github_client()
-        repo = gh.get_repo(repo_name)
+        repo = gh.get_repo(_repo_name(args))
+        ref = args.get("ref") or repo.default_branch
 
         # Get file content
         file_content = repo.get_contents(path, ref=ref)
@@ -225,15 +243,14 @@ async def _read_file(args: dict) -> list[TextContent]:
 
 async def _create_pr(args: dict) -> list[TextContent]:
     """Create a pull request."""
-    repo_name = args["repo"]
     title = args["title"]
     body = args["body"]
     head = args["head"]
-    base = args.get("base", "main")
 
     try:
         gh = _get_github_client()
-        repo = gh.get_repo(repo_name)
+        repo = gh.get_repo(_repo_name(args))
+        base = args.get("base") or repo.default_branch
 
         # Create PR
         pr = repo.create_pull(
@@ -261,7 +278,7 @@ async def _create_pr(args: dict) -> list[TextContent]:
 
 def main():
     """Run the MCP server."""
-    asyncio.run(stdio_server(app))
+    run_stdio(app)
 
 
 if __name__ == "__main__":

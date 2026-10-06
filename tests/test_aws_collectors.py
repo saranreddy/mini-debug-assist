@@ -330,7 +330,7 @@ class TestAlarmEventParsing:
             "detail-type": "CloudWatch Alarm State Change",
             "time": "2026-10-05T12:00:00Z",
             "detail": {
-                "alarmName": "MiniDebugAssist-HighErrorRate",
+                "alarmName": "mini-debug-assist-error-alarm",
                 "state": {
                     "value": "ALARM",
                     "reason": "Threshold Crossed: 10 datapoints were greater than 5",
@@ -353,7 +353,7 @@ class TestAlarmEventParsing:
 
         issue_data = _parse_alarm_event(alarm_event)
 
-        assert issue_data["alarm_name"] == "MiniDebugAssist-HighErrorRate"
+        assert issue_data["alarm_name"] == "mini-debug-assist-error-alarm"
         assert issue_data["alarm_state"] == "ALARM"
         assert issue_data["error_type"] == "KeyError"
         assert issue_data["endpoint"] == "/user/3"

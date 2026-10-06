@@ -83,6 +83,8 @@ jobs:
       - name: CDK Synth (without AWS credentials)
         run: cd infra && cdk synth
         env:
+          # infra/app.py requires a valid GITHUB_REPO (the fork the agent opens PRs in)
+          GITHUB_REPO: "example-owner/mini-debug-assist"
           CDK_DEFAULT_ACCOUNT: "123456789012"
           CDK_DEFAULT_REGION: "us-east-1"
           # Explicitly unset AWS credentials to ensure synth works without them

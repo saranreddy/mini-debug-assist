@@ -13,7 +13,21 @@ import time
 import boto3
 from botocore.exceptions import ClientError
 
+from agent.config import aws_region
+
 logger = logging.getLogger(__name__)
+
+# One investigation per error signature per 15 minutes. Override with
+# DEDUP_WINDOW_SECONDS; clear early with `make reset-dedup`.
+DEFAULT_DEDUP_WINDOW_SECONDS = 900
+
+
+def default_dedup_window() -> int:
+    """Dedup window from DEDUP_WINDOW_SECONDS, else the 15-minute default."""
+    try:
+        return int(os.getenv("DEDUP_WINDOW_SECONDS", DEFAULT_DEDUP_WINDOW_SECONDS))
+    except ValueError:
+        return DEFAULT_DEDUP_WINDOW_SECONDS
 
 
 def get_error_signature(alarm_name: str, error_type: str, endpoint: str) -> str:
@@ -36,7 +50,7 @@ def get_error_signature(alarm_name: str, error_type: str, endpoint: str) -> str:
 
 def should_investigate(
     error_signature: str,
-    dedup_window_seconds: int = 3600,
+    dedup_window_seconds: int | None = None,
 ) -> bool:
     """
     Check if we should investigate this error.
@@ -45,11 +59,15 @@ def should_investigate(
 
     Args:
         error_signature: Unique identifier for this error
-        dedup_window_seconds: How long to suppress duplicates (default: 1 hour)
+        dedup_window_seconds: How long to suppress duplicates
+            (default: DEDUP_WINDOW_SECONDS or 15 minutes)
 
     Returns:
         True if we should investigate, False if it's a duplicate
     """
+    if dedup_window_seconds is None:
+        dedup_window_seconds = default_dedup_window()
+
     table_name = os.getenv("DEDUP_TABLE_NAME")
 
     if not table_name:
@@ -57,7 +75,7 @@ def should_investigate(
         return True
 
     try:
-        dynamodb = boto3.resource("dynamodb")
+        dynamodb = boto3.resource("dynamodb", region_name=aws_region())
         table = dynamodb.Table(table_name)
 
         current_time = int(time.time())

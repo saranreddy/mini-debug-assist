@@ -16,6 +16,10 @@ import sys
 
 import requests
 
+# Must match rule_name in infra/stacks/agent_stack.py (AGENT_TRIGGER_RULE_NAME);
+# tests/test_deployment_consistency.py checks this.
+AGENT_TRIGGER_RULE_NAME = "mini-debug-assist-agent-trigger"
+
 
 def check_demo_app():
     """Check if demo app is responding."""
@@ -26,7 +30,7 @@ def check_demo_app():
                 "cloudformation",
                 "describe-stacks",
                 "--stack-name",
-                "MiniDebugAssist-DemoAppStack",
+                "MiniDebugAssist-DemoApp",
             ],
             capture_output=True,
             text=True,
@@ -91,23 +95,22 @@ def check_alarm():
 
 
 def check_eventbridge_rule():
-    """Check if EventBridge rule exists."""
+    """Check that the EventBridge rule that starts the agent exists and is enabled."""
     try:
         result = subprocess.run(
-            ["aws", "events", "list-rules", "--name-prefix", "mini-debug-assist"],
+            ["aws", "events", "describe-rule", "--name", AGENT_TRIGGER_RULE_NAME],
             capture_output=True,
             text=True,
         )
 
         if result.returncode != 0:
-            return False, "Error querying rules"
+            return False, f"Rule {AGENT_TRIGGER_RULE_NAME} not found"
 
-        rules = json.loads(result.stdout).get("Rules", [])
-        if rules:
-            rule = rules[0]
-            return True, f"Rule exists (state: {rule['State']})"
-        else:
-            return False, "Rule not found"
+        rule = json.loads(result.stdout)
+        state = rule.get("State", "UNKNOWN")
+        if state != "ENABLED":
+            return False, f"Rule {AGENT_TRIGGER_RULE_NAME} is {state}"
+        return True, f"Rule exists (state: {state})"
 
     except Exception as e:
         return False, f"Error checking rule: {e}"
