@@ -35,6 +35,7 @@ bootstrap:
 
 deploy:
 	@echo "Deploying agent infrastructure..."
+	@python3 infra/deploy_config.py
 	cd infra && cdk deploy --all --require-approval never
 
 destroy:

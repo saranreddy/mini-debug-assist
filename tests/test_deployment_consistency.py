@@ -5,9 +5,15 @@ Prevents drift between infrastructure definitions and operational scripts.
 """
 
 import json
+import os
 import subprocess
 
 import pytest
+
+# infra/app.py refuses to synth without a valid GITHUB_REPO (see infra/deploy_config.py).
+# Use the caller's value if set, else a well-formed example, for every synth below.
+TEST_GITHUB_REPO = "example-owner/mini-debug-assist"
+CDK_ENV = {**os.environ, "GITHUB_REPO": os.environ.get("GITHUB_REPO") or TEST_GITHUB_REPO}
 
 
 def test_cdk_synth_produces_expected_outputs():
@@ -24,6 +30,7 @@ def test_cdk_synth_produces_expected_outputs():
         cwd="infra",
         capture_output=True,
         text=True,
+        env=CDK_ENV,
     )
 
     assert result.returncode == 0, f"CDK synth failed: {result.stderr}"
@@ -60,6 +67,7 @@ def test_demo_app_stack_has_url_output():
         cwd="infra",
         capture_output=True,
         text=True,
+        env=CDK_ENV,
     )
 
     assert result.returncode == 0, f"CDK synth failed: {result.stderr}"
@@ -80,6 +88,7 @@ def test_alarm_name_matches_scripts():
         cwd="infra",
         capture_output=True,
         text=True,
+        env=CDK_ENV,
     )
 
     assert result.returncode == 0, f"CDK synth failed: {result.stderr}"
@@ -121,6 +130,7 @@ def test_cluster_name_matches_scripts():
         cwd="infra",
         capture_output=True,
         text=True,
+        env=CDK_ENV,
     )
 
     assert result.returncode == 0, f"CDK synth failed: {result.stderr}"
@@ -155,6 +165,7 @@ def test_task_family_matches_scripts():
         cwd="infra",
         capture_output=True,
         text=True,
+        env=CDK_ENV,
     )
 
     assert result.returncode == 0, f"CDK synth failed: {result.stderr}"
@@ -191,6 +202,7 @@ def test_secret_is_imported_not_created():
         cwd="infra",
         capture_output=True,
         text=True,
+        env=CDK_ENV,
     )
 
     assert result.returncode == 0, f"CDK synth failed: {result.stderr}"
@@ -221,6 +233,7 @@ def test_secret_is_imported_not_created():
 
 import importlib.util  # noqa: E402
 import re  # noqa: E402
+import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -241,6 +254,7 @@ def synth(tmp_path_factory):
         cwd=REPO_ROOT / "infra",
         capture_output=True,
         text=True,
+        env=CDK_ENV,
     )
     assert result.returncode == 0, f"CDK synth failed: {result.stderr}"
     templates = {
@@ -374,3 +388,139 @@ def test_demo_app_uses_asset_image_not_stock_python(synth):
     assert container["LogConfiguration"]["LogDriver"] == "awslogs"
     log_group = _single(templates["MiniDebugAssist-DemoApp"], "AWS::Logs::LogGroup")
     assert log_group["LogGroupName"] == "/aws/ecs/mini-debug-assist-demo"
+
+
+# ---------------------------------------------------------------------------
+# Guards for the agent image build, agent task networking, and GITHUB_REPO.
+# ---------------------------------------------------------------------------
+
+
+def _dockerfile_copy_sources(dockerfile: Path) -> list[str]:
+    """Source paths of every COPY/ADD instruction (ignores comments and --flags)."""
+    sources = []
+    for raw in dockerfile.read_text().splitlines():
+        parts = raw.split()
+        if not parts or parts[0].upper() not in {"COPY", "ADD"}:
+            continue
+        args = [p for p in parts[1:] if not p.startswith("--")]
+        sources.extend(args[:-1])  # last argument is the destination
+    return sources
+
+
+def test_agent_image_builds_from_repo_root_and_every_copy_resolves(synth):
+    """The agent asset's context is the repo root, and the staged context has every COPY source."""
+    _, out_dir = synth
+    assets = json.loads((out_dir / "MiniDebugAssist-Agent.assets.json").read_text())
+    docker_images = assets.get("dockerImages", {})
+    assert len(docker_images) == 1
+    source = next(iter(docker_images.values()))["source"]
+    assert source.get("dockerFile") == "agent/Dockerfile"
+    assert source.get("platform") == "linux/amd64"
+
+    staged = out_dir / source["directory"]
+    sources = _dockerfile_copy_sources(REPO_ROOT / "agent" / "Dockerfile")
+    assert {"pyproject.toml", "agent", "demo_app", "mcp_servers", "skills", "tests"} <= set(sources)
+    for src in sources:
+        assert (REPO_ROOT / src).exists(), f"agent/Dockerfile copies {src}, missing in the repo"
+        assert (staged / src).exists(), f"agent/Dockerfile copies {src}, missing in build context"
+    assert (staged / "agent" / "Dockerfile").is_file()
+
+    # Excluded: secrets, big files, and things the image does not need
+    for excluded in [".git", ".env", "docs", "infra", "output"]:
+        assert not (staged / excluded).exists(), f"{excluded} should not be in the build context"
+    assert not list(staged.rglob("*.mp4")), "Videos should not be in the build context"
+
+
+def test_agent_task_gets_public_ip_and_outbound_access(synth):
+    """Public subnets + no NAT: the EventBridge-launched task needs a public IP and egress."""
+    templates, _ = synth
+    agent = templates["MiniDebugAssist-Agent"]
+    rule = _single(agent, "AWS::Events::Rule")
+    vpc_config = rule["Targets"][0]["EcsParameters"]["NetworkConfiguration"]["AwsVpcConfiguration"]
+    assert vpc_config["AssignPublicIp"] == "ENABLED"
+    assert all("PublicSubnet" in json.dumps(subnet) for subnet in vpc_config["Subnets"])
+
+    groups = _resources(agent, "AWS::EC2::SecurityGroup")
+    assert groups, "Expected a security group for the agent task"
+    for group in groups:
+        egress = group["Properties"].get("SecurityGroupEgress", [])
+        assert any(
+            e.get("CidrIp") == "0.0.0.0/0" and e.get("IpProtocol") == "-1" for e in egress
+        ), "Agent task security group must allow all outbound traffic"
+
+
+def test_agent_task_gets_the_configured_github_repo(synth):
+    """GITHUB_REPO from the environment/.env lands in the agent container."""
+    templates, _ = synth
+    task_def = _single(templates["MiniDebugAssist-Agent"], "AWS::ECS::TaskDefinition")
+    env = {
+        e["Name"]: e["Value"]
+        for c in task_def["ContainerDefinitions"]
+        for e in c.get("Environment", [])
+    }
+    assert env.get("GITHUB_REPO") == CDK_ENV["GITHUB_REPO"]
+
+
+def _load_deploy_config():
+    spec = importlib.util.spec_from_file_location(
+        "deploy_config", REPO_ROOT / "infra" / "deploy_config.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_github_repo_resolution_rules(tmp_path):
+    """Env wins, then .env; empty, placeholder, and malformed values are rejected."""
+    deploy_config = _load_deploy_config()
+    dotenv = tmp_path / ".env"
+    missing = tmp_path / "missing.env"
+
+    assert deploy_config.resolve_github_repo({"GITHUB_REPO": "octo/repo"}, missing) == "octo/repo"
+
+    dotenv.write_text('# comment\nexport GITHUB_REPO="octo/from-dotenv"  \n')
+    assert deploy_config.resolve_github_repo({}, dotenv) == "octo/from-dotenv"
+    assert deploy_config.resolve_github_repo({"GITHUB_REPO": ""}, dotenv) == "octo/from-dotenv"
+    assert deploy_config.resolve_github_repo({"GITHUB_REPO": "a/b"}, dotenv) == "a/b"
+
+    bad_values = ["", "your-username/mini-debug-assist", "not-a-repo", "a/b/c", "https://x/y"]
+    for bad in bad_values:
+        dotenv.write_text(f"GITHUB_REPO={bad}\n")
+        with pytest.raises(deploy_config.DeployConfigError, match="GITHUB_REPO"):
+            deploy_config.resolve_github_repo({}, dotenv)
+    with pytest.raises(deploy_config.DeployConfigError, match="not set"):
+        deploy_config.resolve_github_repo({}, missing)
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [("", "GITHUB_REPO is not set"), ("your-username/mini-debug-assist", "placeholder")],
+)
+def test_cdk_app_refuses_empty_or_placeholder_github_repo(tmp_path, value, expected):
+    """infra/app.py (run by cdk synth/deploy) exits with a clear message, deploying nothing."""
+    import shutil
+
+    # Copy infra/ into an empty fake repo so no real .env can supply a value
+    infra = tmp_path / "repo" / "infra"
+    shutil.copytree(
+        REPO_ROOT / "infra", infra, ignore=shutil.ignore_patterns("cdk.out", "__pycache__")
+    )
+    result = subprocess.run(
+        [sys.executable, "app.py"],
+        cwd=infra,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "GITHUB_REPO": value, "CDK_OUTDIR": str(tmp_path / "out")},
+    )
+    assert result.returncode == 1
+    assert expected in result.stderr
+    assert "export GITHUB_REPO=" in result.stderr
+    assert not (tmp_path / "out" / "manifest.json").exists()
+
+
+def test_make_deploy_checks_github_repo_before_cdk_deploy():
+    """`make deploy` runs the GITHUB_REPO check before calling cdk deploy."""
+    makefile = (REPO_ROOT / "Makefile").read_text()
+    recipe = makefile.split("\ndeploy:", 1)[1].split("\n\n", 1)[0]
+    assert recipe.index("infra/deploy_config.py") < recipe.index("cdk deploy")

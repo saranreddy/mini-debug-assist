@@ -11,7 +11,10 @@ Deploys the debugging agent infrastructure:
 Maps to Uber's runtime jobs on Kubernetes with Buildkite CI.
 """
 
+import os
+
 from aws_cdk import (
+    IgnoreMode,
     RemovalPolicy,
     Stack,
 )
@@ -23,6 +26,9 @@ from aws_cdk import (
 )
 from aws_cdk import (
     aws_ec2 as ec2,
+)
+from aws_cdk import (
+    aws_ecr_assets as ecr_assets,
 )
 from aws_cdk import (
     aws_ecs as ecs,
@@ -49,12 +55,48 @@ from .demo_app_stack import DemoAppStack
 # Explicit rule name so scripts/smoke.py can look the rule up directly
 AGENT_TRIGGER_RULE_NAME = "mini-debug-assist-agent-trigger"
 
+# The agent image is built from the repo root (agent/Dockerfile copies pyproject.toml,
+# README.md, agent/, demo_app/, mcp_servers/, skills/, tests/ from there).
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+AGENT_DOCKERFILE = "agent/Dockerfile"
+
+# Kept out of the agent image build context: big, irrelevant, or secret files.
+# (Docker-style patterns, relative to the repo root.)
+AGENT_IMAGE_EXCLUDES = [
+    ".git",
+    ".github",
+    ".env",
+    ".venv",
+    "venv",
+    "**/node_modules",
+    "**/cdk.out",
+    "infra",
+    "docs",
+    "output",
+    "**/*.mp4",
+    "**/__pycache__",
+    "**/*.pyc",
+    "**/.pytest_cache",
+    "**/.mypy_cache",
+    "**/.ruff_cache",
+    ".coverage",
+    "htmlcov",
+    "**/*.egg-info",
+    "build",
+    "dist",
+]
+
 
 class AgentStack(Stack):
     """Stack for the debugging agent infrastructure."""
 
     def __init__(
-        self, scope: Construct, construct_id: str, demo_app_stack: DemoAppStack, **kwargs
+        self,
+        scope: Construct,
+        construct_id: str,
+        demo_app_stack: DemoAppStack,
+        github_repo: str,
+        **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
@@ -200,16 +242,16 @@ class AgentStack(Stack):
         self.dedup_table.grant_read_write_data(self.agent_role)
 
         # ===== Build Agent Container Image =====
-        # Build Docker image from agent/ directory
-        import os
-
-        agent_dockerfile_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "agent"
-        )
-
+        # Build context = repo root, Dockerfile = agent/Dockerfile, so every COPY in the
+        # Dockerfile resolves. `cdk synth` only stages the (filtered) context into
+        # cdk.out; Docker runs at `cdk deploy`. LINUX_AMD64 matches Fargate's default
+        # x86_64 runtime, even when building on an Apple Silicon laptop.
         self.agent_image = ecs.ContainerImage.from_asset(
-            agent_dockerfile_path,
-            file="Dockerfile",
+            REPO_ROOT,
+            file=AGENT_DOCKERFILE,
+            exclude=AGENT_IMAGE_EXCLUDES,
+            ignore_mode=IgnoreMode.DOCKER,
+            platform=ecr_assets.Platform.LINUX_AMD64,
         )
 
         # ===== Agent Task Definition =====
@@ -240,7 +282,8 @@ class AgentStack(Stack):
                 "AGENT_TYPE": "python-web",
                 "DEMO_APP_LOG_GROUP": demo_app_stack.log_group.log_group_name,
                 "DEDUP_TABLE_NAME": self.dedup_table.table_name,
-                "GITHUB_REPO": os.getenv("GITHUB_REPO", ""),
+                # Validated in infra/deploy_config.py (never empty or the placeholder)
+                "GITHUB_REPO": github_repo,
             },
             secrets={
                 "GITHUB_TOKEN": ecs.Secret.from_secrets_manager(self.github_token_secret),
@@ -271,7 +314,10 @@ class AgentStack(Stack):
             targets.EcsTask(
                 cluster=demo_app_stack.cluster,
                 task_definition=self.agent_task_def,
+                # Public subnets and no NAT gateway: the task needs a public IP to pull
+                # its image from ECR and reach Bedrock, Secrets Manager, and GitHub.
                 subnet_selection=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
+                assign_public_ip=True,
                 container_overrides=[
                     targets.ContainerOverride(
                         container_name="AgentContainer",

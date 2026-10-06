@@ -1,7 +1,12 @@
 # Agent Dockerfile
-# Builds a container that can run the debug agent in AWS mode
+# Builds a container that can run the debug agent in AWS mode.
+#
+# The build context is the REPO ROOT (CDK: infra/stacks/agent_stack.py builds it
+# with file="agent/Dockerfile"), so every COPY below is relative to the repo root.
+# Local test, from the repo root:
+#   docker build -t mini-debug-assist-agent -f agent/Dockerfile .
 
-FROM python:3.11-slim
+FROM public.ecr.aws/docker/library/python:3.11-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -13,7 +18,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy project files
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 COPY demo_app ./demo_app
 COPY agent ./agent
 COPY mcp_servers ./mcp_servers

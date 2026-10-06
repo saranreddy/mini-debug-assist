@@ -10,9 +10,13 @@ Checks:
 - Bedrock model access for configured models
 """
 
+import importlib.util
 import json
 import subprocess
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def check_command(cmd, name, install_hint):
@@ -96,6 +100,30 @@ def check_bedrock_access():
     return all_ok, "\n".join(results)
 
 
+def check_github_repo():
+    """
+    Check GITHUB_REPO (the fork the agent opens PRs in), using the same rules as
+    `make deploy` (infra/deploy_config.py). Informational only: it is normally set in
+    .env at the setup-secrets step, after this check runs for the first time.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "deploy_config", REPO_ROOT / "infra" / "deploy_config.py"
+    )
+    if spec is None or spec.loader is None:
+        return False, "⚠️  Could not load infra/deploy_config.py"
+    deploy_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(deploy_config)
+    try:
+        repo = deploy_config.resolve_github_repo()
+    except deploy_config.DeployConfigError:
+        return (
+            False,
+            "⚠️  GITHUB_REPO not set yet: before make deploy, set "
+            "GITHUB_REPO=<your-github-user>/mini-debug-assist in .env",
+        )
+    return True, f"✅ GITHUB_REPO: {repo} (the agent opens PRs here)"
+
+
 def main():
     """Run all checks."""
     print("🔍 Mini Debug Assist - Prerequisites Check\n")
@@ -161,6 +189,11 @@ def main():
         print(msg)
     else:
         print("\n⏭️  Skipping Bedrock check (AWS credentials not configured)")
+
+    # GITHUB_REPO (informational; not counted, make deploy enforces it)
+    print()
+    _, msg = check_github_repo()
+    print(msg)
 
     # Summary
     print("\n" + "=" * 60)

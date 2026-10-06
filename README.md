@@ -143,12 +143,14 @@ cp .env.example .env
 
 # Edit .env and fill in:
 # - GITHUB_TOKEN (personal access token with 'repo' scope)
-# - GITHUB_REPO (your-username/mini-debug-assist)
+# - GITHUB_REPO (your fork, e.g. octocat/mini-debug-assist; required by make deploy)
 # - AWS_REGION (default: us-east-1)
 
-# Store token in Secrets Manager
+# Store token in Secrets Manager (enter the same repo when it asks)
 make setup-secrets
 ```
+
+**`GITHUB_REPO` is required.** It is the fork the agent opens PRs in, and it is baked into the agent's task definition at deploy time. `make deploy` reads it from `.env` (or from `export GITHUB_REPO=...` in your shell) and stops with an error if it is missing, still the `your-username/...` placeholder, or not in `owner/name` form. Check it any time with `python3 infra/deploy_config.py`.
 
 ### 8. Bootstrap CDK (One-Time)
 
@@ -164,8 +166,8 @@ This provisions CDK resources in your AWS account (S3 bucket for assets, IAM rol
 make deploy
 ```
 
-This provisions (~5 minutes):
-- Demo app (ECS Fargate service behind ALB)
+This first checks `GITHUB_REPO`, then uses Docker to build two container images (the agent and the demo app) and provisions (~5 minutes):
+- Demo app (ECS Fargate service behind ALB, running the image built from `demo_app/Dockerfile`)
 - CloudWatch log group + metric filter + alarm
 - EventBridge rule to trigger agent
 - Agent ECS task definition with Bedrock permissions
@@ -247,7 +249,7 @@ AWS_REGION=us-east-1                  # Deploy region
 
 # GitHub (store via make setup-secrets)
 GITHUB_TOKEN=ghp_xxx...               # Personal access token with 'repo' scope
-GITHUB_REPO=your-username/mini-debug-assist
+GITHUB_REPO=your-username/mini-debug-assist   # Required by make deploy: replace with your fork
 
 # Bedrock Models (optional overrides)
 MODEL_CLASSIFY=us.anthropic.claude-sonnet-5-5
@@ -434,6 +436,12 @@ aws logs tail /aws/ecs/mini-debug-assist-agent --follow
 - GitHub token not stored: run `make setup-secrets` again
 - Target repo not forked: the agent opens PRs in **your fork**, not the original repo
 - Branch already exists: agent won't overwrite existing branches (delete manually or use new issue)
+
+### Deploy Stops: GITHUB_REPO Not Set
+
+**Error**: `make deploy` (or `cdk synth`/`cdk deploy`) prints `GITHUB_REPO is not set` or `still the placeholder`.
+
+**Fix**: Set `GITHUB_REPO=your-github-user/mini-debug-assist` in `.env` (or `export` it), then run `python3 infra/deploy_config.py` to confirm and deploy again.
 
 ### CDK Bootstrap Failed
 
