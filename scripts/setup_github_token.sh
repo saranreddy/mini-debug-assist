@@ -28,9 +28,28 @@ if [ -z "$GITHUB_TOKEN" ]; then
     exit 1
 fi
 
-# Get target repository
-echo "Enter the target repository (e.g., saranreddy/mini-debug-assist):"
-read GITHUB_REPO
+# Target repository. `make deploy` bakes GITHUB_REPO (env var or .env) into the
+# agent task, and that is the repo the agent opens PRs in, so default to it and
+# warn if a different one is entered (the token must have access to that repo).
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_REPO="$(cd "$REPO_ROOT/infra" && python3 -c \
+    'from deploy_config import resolve_github_repo; print(resolve_github_repo())' 2>/dev/null || true)"
+
+if [ -n "$DEPLOY_REPO" ]; then
+    echo "Target repository [$DEPLOY_REPO from GITHUB_REPO/.env] (Enter to accept):"
+    read GITHUB_REPO
+    GITHUB_REPO="${GITHUB_REPO:-$DEPLOY_REPO}"
+    if [ "$GITHUB_REPO" != "$DEPLOY_REPO" ]; then
+        echo ""
+        echo "⚠️  You entered $GITHUB_REPO, but make deploy will use GITHUB_REPO=$DEPLOY_REPO."
+        echo "   The agent opens PRs in $DEPLOY_REPO. Update GITHUB_REPO in .env to match,"
+        echo "   or make sure this token can push to $DEPLOY_REPO."
+        echo ""
+    fi
+else
+    echo "Enter the target repository (e.g., saranreddy/mini-debug-assist):"
+    read GITHUB_REPO
+fi
 
 if [ -z "$GITHUB_REPO" ]; then
     echo "❌ No repository provided"
@@ -60,6 +79,11 @@ fi
 echo ""
 echo "✅ Secret stored successfully!"
 echo ""
-echo "The agent will open PRs in: $GITHUB_REPO"
+if [ -n "$DEPLOY_REPO" ]; then
+    echo "The agent will open PRs in: $DEPLOY_REPO (GITHUB_REPO)"
+else
+    echo "⚠️  GITHUB_REPO is not set. Add this line to .env before make deploy:"
+    echo "    GITHUB_REPO=$GITHUB_REPO"
+fi
 echo ""
 echo "Next step: make deploy"

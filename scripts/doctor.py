@@ -100,6 +100,41 @@ def check_bedrock_access():
     return all_ok, "\n".join(results)
 
 
+def resolve_region():
+    """The region `make deploy` will use: env vars first, then `aws configure get region`."""
+    import os
+
+    for var in ("AWS_REGION", "AWS_DEFAULT_REGION", "CDK_DEFAULT_REGION"):
+        if os.environ.get(var):
+            return os.environ[var]
+    try:
+        result = subprocess.run(
+            ["aws", "configure", "get", "region"], capture_output=True, text=True, timeout=10
+        )
+        return result.stdout.strip() or None
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def check_region(region):
+    """
+    Warn when the region is not a US one. The default models are `us.` cross-region
+    inference profiles, which can only be invoked from US regions (us-east-1 is
+    recommended). Informational: it doesn't fail the doctor run.
+    """
+    if not region:
+        return False, (
+            "⚠️  No AWS region configured. Set one, e.g. `aws configure set region us-east-1`"
+        )
+    if not region.startswith("us-"):
+        return False, (
+            f"⚠️  Region {region} is not a US region. The default Bedrock models are `us.` "
+            "inference profiles, which only work from US regions. Deploy to us-east-1 "
+            "(recommended): `aws configure set region us-east-1`."
+        )
+    return True, f"✅ Region: {region}"
+
+
 def check_github_repo():
     """
     Check GITHUB_REPO (the fork the agent opens PRs in), using the same rules as
@@ -179,6 +214,16 @@ def main():
         msg = f"❌ Missing Python dependencies: {e}. Run: pip install -r requirements.txt"
         print(msg)
         checks.append((False, msg))
+
+    # Region (informational warning, not counted)
+    region = resolve_region()
+    _, msg = check_region(region)
+    print(msg)
+    if region:
+        import os
+
+        # Check Bedrock in the region the agent will run in
+        os.environ.setdefault("AWS_REGION", region)
 
     # Bedrock access (only if AWS credentials work)
     if checks[1][0]:  # AWS credentials check passed

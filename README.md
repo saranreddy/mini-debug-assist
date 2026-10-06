@@ -21,7 +21,7 @@ A learning-focused demo of modern agentic patterns for platform engineers: Multi
 
 [![Mini Debug Assist Deploy Walkthrough Video](docs/deploy-walkthrough-poster.png)](docs/deploy-walkthrough.mp4)
 
-*Watch this when you're ready to run it in your own AWS account: a 4:43 step-by-step of the Quick Start, from `make doctor` to `make destroy` (terminal output is illustrative).*
+*Watch this when you're ready to run it in your own AWS account: a 4:46 step-by-step of the Quick Start, from `make doctor` to `make destroy` (terminal output is illustrative).*
 
 ## Who Should Use This
 
@@ -117,6 +117,8 @@ aws configure
 # Enter your AWS Access Key ID, Secret Access Key, and region (us-east-1)
 ```
 
+**Use a US region, ideally `us-east-1`.** The default models are `us.` cross-region inference profiles (`us.anthropic.claude-*`), which can only be invoked from US regions. `make doctor` warns if your configured region isn't a US one. Everything deploys to the region your AWS CLI/profile uses, and the agent passes that region to every AWS client.
+
 ### 5. Verify Setup
 
 ```bash
@@ -146,9 +148,11 @@ cp .env.example .env
 # - GITHUB_REPO (your fork, e.g. octocat/mini-debug-assist; required by make deploy)
 # - AWS_REGION (default: us-east-1)
 
-# Store token in Secrets Manager (enter the same repo when it asks)
+# Store token in Secrets Manager (it offers GITHUB_REPO from .env as the default)
 make setup-secrets
 ```
+
+`make setup-secrets` defaults the repo to `GITHUB_REPO` from `.env` (or your shell) and warns if you enter a different one, because the agent opens PRs in the repo `make deploy` bakes in.
 
 **`GITHUB_REPO` is required.** It is the fork the agent opens PRs in, and it is baked into the agent's task definition at deploy time. `make deploy` reads it from `.env` (or from `export GITHUB_REPO=...` in your shell) and stops with an error if it is missing, still the `your-username/...` placeholder, or not in `owner/name` form. Check it any time with `python3 infra/deploy_config.py`.
 
@@ -166,8 +170,9 @@ This provisions CDK resources in your AWS account (S3 bucket for assets, IAM rol
 make deploy
 ```
 
-This first checks `GITHUB_REPO`, then uses Docker to build two container images (the agent and the demo app) and provisions (~5 minutes):
+This first checks `GITHUB_REPO` and looks up the complete ARN of the `mini-debug-assist/github-token` secret (ECS needs the full ARN to inject the token; if the secret doesn't exist it stops with "Run `make setup-secrets` first"). Then it uses Docker to build two container images (the agent and the demo app) and provisions (~5 minutes):
 - Demo app (ECS Fargate service behind ALB, running the image built from `demo_app/Dockerfile`)
+- AppConfig feature flags (`discount_v2`, off), deployed to the `production` environment the demo app reads
 - CloudWatch log group + metric filter + alarm
 - EventBridge rule to trigger agent
 - Agent ECS task definition with Bedrock permissions
@@ -193,7 +198,7 @@ This checks:
 make trigger-bug
 ```
 
-This calls the demo app's `/user/3` endpoint 12 times to trigger the planted KeyError bug, causing the CloudWatch alarm to enter ALARM state. Wait ~1 minute for:
+This calls the demo app's `/user/3` endpoint 20 times (the alarm needs 10 in 5 minutes; the extra margin covers dropped requests) to trigger the planted KeyError bug, causing the CloudWatch alarm to enter ALARM state. Wait ~1 minute for:
 - EventBridge to invoke the agent ECS task
 - Agent to investigate, write a fix, run tests, and open a PR
 
@@ -245,7 +250,7 @@ See [`.env.example`](.env.example) for all variables. Key settings:
 
 ```bash
 # AWS
-AWS_REGION=us-east-1                  # Deploy region
+AWS_REGION=us-east-1                  # Deploy region: a US region (us. inference profiles)
 
 # GitHub (store via make setup-secrets)
 GITHUB_TOKEN=ghp_xxx...               # Personal access token with 'repo' scope
@@ -262,6 +267,21 @@ MCP_MOCK_MODE=false                   # true = in-process mocks, false = real st
 LANGSMITH_API_KEY=lsv2_pt_xxx...
 LANGSMITH_PROJECT=mini-debug-assist
 ```
+
+### Agent Task Settings
+
+Read from the agent container's environment (add them to its `environment` in `infra/stacks/agent_stack.py` to change the defaults):
+
+- `DEDUP_WINDOW_SECONDS` (default `900`): the agent investigates each error signature at most once per 15 minutes. Clear it early with `make reset-dedup`.
+- `XRAY_TRACES_ENABLED` (default `false`): see X-Ray below.
+
+### Feature Flags (AppConfig)
+
+`make deploy` creates the AppConfig application `MiniDebugAssist`, environment `production`, and a `feature-flags` profile (type `AWS.AppConfig.FeatureFlags`) with one flag, `discount_v2` (code name `DISCOUNT_V2`), off. The demo app reads it with the AppConfig Data API (`StartConfigurationSession` and `GetLatestConfiguration`) and re-polls about every 15 seconds. To turn the planted `/discount` bug on, enable `discount_v2` in the AppConfig console and deploy it to `production`. Locally (`USE_AWS_APPCONFIG` unset) nothing calls AWS; use `DISCOUNT_V2=on` instead.
+
+### X-Ray
+
+The demo app is **not** instrumented for X-Ray (no X-Ray SDK, no daemon/ADOT sidecar), so the agent skips trace collection and works from CloudWatch Logs, which carry the stack trace. To add tracing, instrument the app (e.g. OpenTelemetry with an ADOT collector sidecar exporting to X-Ray), then set `XRAY_TRACES_ENABLED=true` on the agent task.
 
 ### CDK Context (Optional)
 
@@ -308,22 +328,23 @@ max_turns_classify: int = 20           # Sonnet tool-use turns
 - ✅ Parallel RCA subagents via `Send` with state merging (`breadcrumbs`, `flag_correlation`, `offending_commit`)
 - ✅ Consolidator retry/escalation logic based on confidence and agreement scores
 - ✅ Fix node with bounded tool loops (Bedrock Converse API, max 50 turns) and `fix_history` feedback
-- ✅ Validation node: copies repo to temp dir, applies patches with `git apply`/`patch -p1`, runs pytest
+- ✅ Validation node: copies repo to temp dir, applies patches with `git apply`, runs the demo app tests (`tests/test_demo_app.py`)
 - ✅ Symptom-hiding detection: rejects `try/except: pass`, silent failures, broad exception handling
 - ✅ GitHub PR creation: commits via Git Database API (blobs → tree → commit), includes RCA and test results
 
 **AWS Integration:**
 - ✅ CloudWatch alarm on error count (10 errors in 5 minutes)
 - ✅ EventBridge rule triggers ECS task on alarm state change
-- ✅ DynamoDB deduplication (one investigation per error signature per hour)
+- ✅ DynamoDB deduplication (one investigation per error signature per 15 minutes; `make reset-dedup` clears it)
 - ✅ ECS Fargate task definition with Bedrock IAM permissions
 - ✅ Agent Docker image built from workspace via `ContainerImage.from_asset`
-- ✅ CloudWatch Logs and X-Ray tracing (optional in demo app)
+- ✅ CloudWatch Logs (X-Ray trace collection is opt-in; the demo app isn't instrumented)
+- ✅ AppConfig feature flags (FeatureFlags schema, deployed, read via AppConfig Data)
 
 **MCP Integration:**
 - ✅ JSON-RPC 2.0 over stdio: `initialize`, `notifications/initialized`, `tools/list`, `tools/call`
 - ✅ Request/response matching by ID, skips notifications and log lines
-- ✅ 4 Python MCP servers using official `mcp` SDK (cloudwatch_logs, xray, github_mcp, appconfig_flags)
+- ✅ 4 Python MCP servers using official `mcp` SDK 1.x (cloudwatch_logs, xray, github_mcp, appconfig_flags), started lazily on the first tool call
 - ✅ Real mode never silently falls back to mocks (returns `isError` on unknown tools)
 - ✅ Subprocess lifecycle management with timeouts and cleanup
 
@@ -334,7 +355,7 @@ max_turns_classify: int = 20           # Sonnet tool-use turns
 - ✅ Model IDs from AWS docs (Oct 2026): https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5-5.html
 
 **Testing:**
-- ✅ 53 tests passing (48 unit, 3 integration, 2 e2e)
+- ✅ 127 tests passing, 2 expected failures (planted demo bugs), including real stdio MCP server launches and offline CDK synth checks
 - ✅ Mock mode for local development (no AWS costs)
 - ✅ Regression tests for demo app bugs (marked xfail on unpatched app)
 - ✅ MCP protocol tests with real stdio servers
@@ -435,7 +456,29 @@ aws logs tail /aws/ecs/mini-debug-assist-agent --follow
 **Common causes**:
 - GitHub token not stored: run `make setup-secrets` again
 - Target repo not forked: the agent opens PRs in **your fork**, not the original repo
-- Branch already exists: agent won't overwrite existing branches (delete manually or use new issue)
+- Each investigation pushes to its own branch (`fix/debug-assist-<issue>-<event id>`), so an old branch never blocks a new PR
+
+### Agent Ran but Skipped: "Skipping duplicate investigation"
+
+**Cause**: the agent already investigated the same alarm in the last 15 minutes (DynamoDB table `mini-debug-assist-dedup`). Re-triggering within the window starts the task, but it exits early.
+
+**Fix**: wait 15 minutes, or clear the records and trigger again:
+```bash
+make reset-dedup
+make trigger-bug
+```
+
+### Deploy Stops: GitHub Token Secret Not Found
+
+**Error**: `make deploy` prints `Secret mini-debug-assist/github-token does not exist in this account/region. Run make setup-secrets first`.
+
+**Fix**: run `make setup-secrets` with the same AWS account and region you deploy to, then `make deploy` again. (`make deploy` passes the secret's complete ARN to CDK; a plain `cdk deploy` with credentials looks it up the same way.)
+
+### Bedrock Errors in a Non-US Region
+
+**Error**: the agent fails calling Bedrock with a validation or access error on `us.anthropic.claude-*`.
+
+**Fix**: the `us.` inference profiles only work from US regions. Deploy to `us-east-1` (recommended): `aws configure set region us-east-1`, then `make deploy`. `make doctor` warns about this.
 
 ### Deploy Stops: GITHUB_REPO Not Set
 

@@ -1,7 +1,8 @@
 # Runtime dependencies for the demo app container (demo_app/Dockerfile).
 # Kept separate from the root pyproject.toml so the image stays small
 # (no LangGraph, MCP, or test tooling).
-fastapi>=0.104.0
-uvicorn>=0.24.0
-python-json-logger>=2.0.7
-boto3>=1.34.0
+# Pinned to the same versions as pyproject.toml (known good).
+fastapi==0.142.2
+uvicorn==0.54.0
+python-json-logger==4.2.0
+boto3==1.43.108
