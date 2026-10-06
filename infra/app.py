@@ -19,16 +19,30 @@ allowing `cdk synth` to work without authentication.
 import os
 import sys
 
-from deploy_config import DeployConfigError, resolve_github_repo
+from deploy_config import (
+    DeployConfigError,
+    resolve_github_repo,
+    resolve_github_token_secret_arn,
+)
 
-# The fork the agent opens PRs in (from the environment or the repo-root .env).
+# The fork the agent opens PRs in (from the environment or the repo-root .env),
+# and the complete ARN of the GitHub token secret (set by `make deploy`, looked up
+# when AWS credentials are present, a placeholder for offline synth).
 # Checked first, before anything is synthesized, so a missing value fails with a
-# clear message instead of deploying an agent with an empty repo.
+# clear message instead of deploying an agent that can't reach GitHub.
 try:
     github_repo = resolve_github_repo()
+    github_token_secret_arn, secret_is_placeholder = resolve_github_token_secret_arn()
 except DeployConfigError as e:
     print(f"\n❌ {e}\n", file=sys.stderr)
     sys.exit(1)
+
+if secret_is_placeholder:
+    print(
+        "ℹ️  No AWS credentials: using a placeholder GitHub token secret ARN (fine for synth;"
+        " deploy with `make deploy`).",
+        file=sys.stderr,
+    )
 
 import aws_cdk as cdk  # noqa: E402
 from stacks.agent_stack import AgentStack  # noqa: E402
@@ -67,6 +81,7 @@ agent_stack = AgentStack(
     env=env,
     demo_app_stack=demo_app_stack,
     github_repo=github_repo,
+    github_token_secret_arn=github_token_secret_arn,
     description="Debug agent orchestration and execution",
 )
 
@@ -77,7 +92,7 @@ observability_stack = ObservabilityStack(
     env=env,
     demo_app_stack=demo_app_stack,
     agent_stack=agent_stack,
-    description="CloudWatch logs, X-Ray tracing, and alarms",
+    description="CloudWatch alarm and dashboard",
 )
 
 # Add dependencies

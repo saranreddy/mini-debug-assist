@@ -802,3 +802,258 @@ def test_cli_keeps_the_alarm_event_json_fallback(monkeypatch):
     assert issue["alarm_name"] == ERROR_ALARM
     assert issue["metric_name"] == "ErrorCount"
     assert issue["metric_namespace"] == "MiniDebugAssist/Demo"
+
+
+# ===== Live-path audit fixes (AppConfig, secret ARN, IAM) =====
+
+FLAG_KEY = re.compile(r"^[a-z][a-zA-Z\d_-]{0,63}$")
+
+
+def _hosted_flags(templates):
+    demo = templates["MiniDebugAssist-DemoApp"]
+    hosted = _single(demo, "AWS::AppConfig::HostedConfigurationVersion")
+    assert hosted["ContentType"] == "application/json"
+    return json.loads(hosted["Content"])
+
+
+def test_appconfig_content_is_a_valid_feature_flags_document(synth):
+    """A FeatureFlags profile rejects anything but the AWS.AppConfig.FeatureFlags schema."""
+    templates, _ = synth
+    demo = templates["MiniDebugAssist-DemoApp"]
+    profile = _single(demo, "AWS::AppConfig::ConfigurationProfile")
+    assert profile["Type"] == "AWS.AppConfig.FeatureFlags"
+
+    doc = _hosted_flags(templates)
+    assert doc["version"] == "1"
+    assert set(doc) <= {"version", "flags", "values"}
+    assert set(doc["flags"]) == set(doc["values"]) == {"discount_v2"}
+    for key, definition in doc["flags"].items():
+        assert FLAG_KEY.match(key), f"invalid flag key {key}"
+        assert definition["name"]
+        assert set(definition) <= {"name", "description", "attributes", "_deprecation"}
+        assert isinstance(doc["values"][key]["enabled"], bool)
+    assert doc["values"]["discount_v2"]["enabled"] is False  # safe default
+
+
+def test_appconfig_flags_are_deployed_to_the_environment_the_app_reads(synth):
+    """Without a Deployment, GetLatestConfiguration returns nothing; names must line up."""
+    templates, _ = synth
+    demo = templates["MiniDebugAssist-DemoApp"]
+    resources = demo["Resources"]
+
+    def logical_id(resource_type):
+        ids = [k for k, r in resources.items() if r["Type"] == resource_type]
+        assert len(ids) == 1, f"expected one {resource_type}"
+        return ids[0]
+
+    deployment = _single(demo, "AWS::AppConfig::Deployment")
+    hosted_id = logical_id("AWS::AppConfig::HostedConfigurationVersion")
+    assert deployment["ConfigurationVersion"] == {"Fn::GetAtt": [hosted_id, "VersionNumber"]}
+    assert deployment["EnvironmentId"] == {"Ref": logical_id("AWS::AppConfig::Environment")}
+    assert deployment["ConfigurationProfileId"] == {
+        "Ref": logical_id("AWS::AppConfig::ConfigurationProfile")
+    }
+    assert deployment["DeploymentStrategyId"] == {
+        "Ref": logical_id("AWS::AppConfig::DeploymentStrategy")
+    }
+    strategy = _single(demo, "AWS::AppConfig::DeploymentStrategy")
+    assert strategy["DeploymentDurationInMinutes"] == 0
+    assert strategy["FinalBakeTimeInMinutes"] == 0
+
+    # The demo container reads AppConfig with the stack's names
+    task_def = _single(demo, "AWS::ECS::TaskDefinition")
+    env = {
+        e["Name"]: e["Value"]
+        for c in task_def["ContainerDefinitions"]
+        for e in c.get("Environment", [])
+    }
+    assert env["USE_AWS_APPCONFIG"] == "true"
+    assert env["APPCONFIG_APPLICATION"] == _single(demo, "AWS::AppConfig::Application")["Name"]
+    assert env["APPCONFIG_ENVIRONMENT"] == _single(demo, "AWS::AppConfig::Environment")["Name"]
+    assert (
+        env["APPCONFIG_CONFIGURATION"]
+        == _single(demo, "AWS::AppConfig::ConfigurationProfile")["Name"]
+    )
+    assert env["AWS_REGION"] == {"Ref": "AWS::Region"}
+
+    # ...and its task role may call AppConfig Data
+    actions = {
+        a
+        for p in _resources(demo, "AWS::IAM::Policy")
+        for st in p["Properties"]["PolicyDocument"]["Statement"]
+        for a in (st["Action"] if isinstance(st["Action"], list) else [st["Action"]])
+    }
+    assert {"appconfig:StartConfigurationSession", "appconfig:GetLatestConfiguration"} <= actions
+    assert not any(a.startswith("xray:") for a in actions), "demo app emits no X-Ray traces"
+
+
+def test_demo_app_reads_the_deployed_flag_document(synth):
+    """The reader maps the stored document (as AppConfig Data returns it) to on/off."""
+    from demo_app.feature_flags import (
+        DEFAULT_APPLICATION,
+        DEFAULT_ENVIRONMENT,
+        DEFAULT_PROFILE,
+        build_flags_document,
+        flag_state,
+    )
+
+    templates, _ = synth
+    demo = templates["MiniDebugAssist-DemoApp"]
+    doc = _hosted_flags(templates)
+    # GetLatestConfiguration returns {"flag": {"enabled": bool, ...attributes}}
+    returned = {key: {"enabled": value["enabled"]} for key, value in doc["values"].items()}
+    assert flag_state(returned, "DISCOUNT_V2") == "off"
+    assert flag_state({"discount_v2": {"enabled": True}}, "DISCOUNT_V2") == "on"
+    assert flag_state(returned, "MISSING_FLAG") is None
+
+    assert build_flags_document({"DISCOUNT_V2": False})["values"] == doc["values"]
+    assert DEFAULT_APPLICATION == _single(demo, "AWS::AppConfig::Application")["Name"]
+    assert DEFAULT_ENVIRONMENT == _single(demo, "AWS::AppConfig::Environment")["Name"]
+    assert DEFAULT_PROFILE == _single(demo, "AWS::AppConfig::ConfigurationProfile")["Name"]
+
+
+def test_agent_secret_uses_the_complete_arn(synth):
+    """ECS injects secret fields by complete ARN (6-char suffix), not the partial name ARN."""
+    deploy_config = _load_deploy_config()
+    templates, _ = synth
+    agent = templates["MiniDebugAssist-Agent"]
+    secrets = {
+        s["Name"]: s["ValueFrom"]
+        for r in _resources(agent, "AWS::ECS::TaskDefinition")
+        for c in r["Properties"]["ContainerDefinitions"]
+        for s in c.get("Secrets", [])
+    }
+    # No credentials in tests/CI: the offline placeholder, which is a complete ARN
+    assert secrets["GITHUB_TOKEN"] == deploy_config.PLACEHOLDER_SECRET_ARN + ":token::"
+    assert deploy_config.SECRET_ARN_PATTERN.match(deploy_config.PLACEHOLDER_SECRET_ARN)
+
+    secret_resources = [
+        st["Resource"]
+        for p in _resources(agent, "AWS::IAM::Policy")
+        for st in p["Properties"]["PolicyDocument"]["Statement"]
+        if "secretsmanager:GetSecretValue" in json.dumps(st["Action"])
+    ]
+    assert secret_resources, "no role can read the GitHub token secret"
+    for resource in secret_resources:
+        assert resource == deploy_config.PLACEHOLDER_SECRET_ARN, resource
+        assert "??????" not in json.dumps(resource)
+
+
+def test_cdk_app_uses_the_secret_arn_make_deploy_passes(tmp_path):
+    """GITHUB_TOKEN_SECRET_ARN (set by make deploy) lands in the task definition."""
+    arn = (
+        "arn:aws:secretsmanager:us-east-1:111122223333:secret:mini-debug-assist/github-token-Ab12Cd"
+    )
+    out = tmp_path / "out"
+    env = {
+        **CDK_ENV,
+        "GITHUB_TOKEN_SECRET_ARN": arn,
+        "CDK_OUTDIR": str(out),
+        "CDK_DEFAULT_ACCOUNT": "123456789012",
+    }
+    for var in ("AWS_ACCESS_KEY_ID", "AWS_PROFILE"):
+        env.pop(var, None)
+    result = subprocess.run(
+        [sys.executable, "app.py"],
+        cwd=REPO_ROOT / "infra",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "placeholder" not in result.stderr
+    template = json.loads((out / "MiniDebugAssist-Agent.template.json").read_text())
+    value_froms = [
+        s["ValueFrom"]
+        for r in _resources(template, "AWS::ECS::TaskDefinition")
+        for c in r["Properties"]["ContainerDefinitions"]
+        for s in c.get("Secrets", [])
+    ]
+    assert value_froms == [arn + ":token::"]
+
+
+@pytest.mark.parametrize(
+    "environ, expected",
+    [
+        ({}, "placeholder"),
+        ({"CDK_DEFAULT_ACCOUNT": "123456789012"}, "placeholder"),
+        ({"GITHUB_TOKEN_SECRET_ARN": "placeholder", "AWS_PROFILE": "x"}, "placeholder"),
+        ({"AWS_PROFILE": "dev"}, "lookup"),
+        ({"CDK_DEFAULT_ACCOUNT": "111122223333"}, "lookup"),
+    ],
+)
+def test_secret_arn_resolution(environ, expected):
+    deploy_config = _load_deploy_config()
+    found = (
+        "arn:aws:secretsmanager:us-east-1:111122223333:secret:mini-debug-assist/github-token-Xy9Z01"
+    )
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout=found + "\n", stderr="")
+
+    arn, is_placeholder = deploy_config.resolve_github_token_secret_arn(environ, run)
+    if expected == "placeholder":
+        assert (arn, is_placeholder) == (deploy_config.PLACEHOLDER_SECRET_ARN, True)
+        assert calls == []
+    else:
+        assert (arn, is_placeholder) == (found, False)
+        assert calls[0][:4] == ["aws", "secretsmanager", "describe-secret", "--secret-id"]
+        assert "mini-debug-assist/github-token" in calls[0]
+
+
+def test_secret_arn_errors_say_run_make_setup_secrets():
+    deploy_config = _load_deploy_config()
+
+    def missing(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            254,
+            stdout="",
+            stderr="An error occurred (ResourceNotFoundException) when calling the "
+            "DescribeSecret operation: Secrets Manager can't find the specified secret.",
+        )
+
+    with pytest.raises(deploy_config.DeployConfigError, match="make setup-secrets"):
+        deploy_config.resolve_github_token_secret_arn({"AWS_PROFILE": "dev"}, missing)
+
+    def no_cli(cmd, **kwargs):
+        raise FileNotFoundError("aws")
+
+    with pytest.raises(deploy_config.DeployConfigError, match="AWS CLI"):
+        deploy_config.lookup_secret_arn(no_cli)
+
+    # A partial (name) ARN is exactly what ECS can't use
+    partial = "arn:aws:secretsmanager:us-east-1:111122223333:secret:mini-debug-assist/github-token"
+    with pytest.raises(deploy_config.DeployConfigError, match="complete ARN"):
+        deploy_config.resolve_github_token_secret_arn({"GITHUB_TOKEN_SECRET_ARN": partial})
+
+
+def test_make_deploy_passes_the_resolved_secret_arn_to_cdk():
+    makefile = (REPO_ROOT / "Makefile").read_text()
+    recipe = makefile.split("\ndeploy:", 1)[1].split("\n\n", 1)[0]
+    assert recipe.index("deploy_config.py --secret-arn") < recipe.index("cdk deploy")
+    assert 'GITHUB_TOKEN_SECRET_ARN="$$ARN" cdk deploy' in recipe
+    # bootstrap/destroy synthesize the app but don't need the secret to exist
+    for target in ("bootstrap", "destroy"):
+        body = makefile.split(f"\n{target}:", 1)[1].split("\n\n", 1)[0]
+        assert "GITHUB_TOKEN_SECRET_ARN=placeholder" in body
+
+
+def test_get_query_results_is_allowed_on_all_resources(synth):
+    """GetQueryResults takes a query ID, not a log group, so it can't be scoped to one."""
+    templates, _ = synth
+    agent = templates["MiniDebugAssist-Agent"]
+    statements = {
+        st.get("Sid"): st
+        for p in _resources(agent, "AWS::IAM::Policy")
+        for st in p["Properties"]["PolicyDocument"]["Statement"]
+    }
+    results = statements["CloudWatchLogsQueryResults"]
+    assert results["Action"] == "logs:GetQueryResults"
+    assert results["Resource"] == "*"
+    read = statements["CloudWatchLogsRead"]
+    assert "logs:GetQueryResults" not in read["Action"]
+    assert "logs:StartQuery" in read["Action"]
+    assert "*" not in json.dumps(read["Resource"]).replace(":*", "")

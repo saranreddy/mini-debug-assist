@@ -159,19 +159,21 @@ class TestDiscountEndpoint:
 
         importlib.reload(demo_config)
 
-        # User '1' has 0 purchases, triggering division by zero
-        response = client.get("/discount?price=100&user_id=1")
+        try:
+            # User '1' has 0 purchases, triggering division by zero
+            response = client.get("/discount?price=100&user_id=1")
 
-        # After fix, should return 200 with reasonable discount
-        assert response.status_code == 200
-        data = response.json()
-        assert data["discount_version"] == "on"
-        assert "discount" in data
-        assert data["discount"] >= 0
-
-        # Clean up
-        os.environ.pop("DISCOUNT_V2", None)
-        importlib.reload(demo_config)
+            # After fix, should return 200 with reasonable discount
+            assert response.status_code == 200
+            data = response.json()
+            assert data["discount_version"] == "on"
+            assert "discount" in data
+            assert data["discount"] >= 0
+        finally:
+            # Clean up even when the planted bug makes the assertions fail, so
+            # DISCOUNT_V2=on doesn't leak into later tests (flags aren't cached)
+            os.environ.pop("DISCOUNT_V2", None)
+            importlib.reload(demo_config)
 
 
 # ===== Test Discovery Notes =====

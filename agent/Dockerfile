@@ -8,8 +8,9 @@
 
 FROM public.ecr.aws/docker/library/python:3.11-slim
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# System dependencies. git is required: the agent applies its fixes with
+# `git apply` (agent/patching.py); `patch` is not used and not installed.
+RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -28,9 +29,9 @@ COPY tests ./tests
 # Install Python dependencies
 RUN pip install --no-cache-dir -e .
 
-# Set environment defaults
+# Set environment defaults. No region here: the ECS task sets AWS_REGION to the
+# stack's region, and every boto3 client passes it explicitly.
 ENV PYTHONUNBUFFERED=1
-ENV AWS_DEFAULT_REGION=us-east-1
 
 # Run agent in AWS mode by default
 # Container overrides will provide ISSUE_SOURCE and other vars

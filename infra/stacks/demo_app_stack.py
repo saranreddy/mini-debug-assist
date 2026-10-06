@@ -7,11 +7,13 @@ Deploys the FastAPI demo application to ECS Fargate with:
 - Application Load Balancer
 - AppConfig for feature flags
 - CloudWatch log group
-- X-Ray tracing
+
+(No X-Ray: the demo app emits no traces; the agent works from CloudWatch Logs.)
 
 Maps to Uber's production services monitored by Healthline.
 """
 
+import json
 import os
 
 from aws_cdk import (
@@ -51,6 +53,24 @@ ERROR_METRIC_NAME = "ErrorCount"
 # constant can't live there without a circular import).
 ERROR_ALARM_NAME = "mini-debug-assist-error-alarm"
 DEMO_APP_PORT = 8000
+
+# AppConfig names. demo_app/feature_flags.py and mcp_servers/appconfig_flags.py
+# default to the same values, and the demo container gets them as env vars.
+APPCONFIG_APPLICATION_NAME = "MiniDebugAssist"
+APPCONFIG_ENVIRONMENT_NAME = "production"
+APPCONFIG_PROFILE_NAME = "feature-flags"
+
+# Initial flags in the AWS.AppConfig.FeatureFlags schema (validated by AppConfig).
+FEATURE_FLAGS_DOCUMENT = {
+    "version": "1",
+    "flags": {
+        "discount_v2": {
+            "name": "discount_v2",
+            "description": "New discount algorithm in /discount (planted bug when on)",
+        }
+    },
+    "values": {"discount_v2": {"enabled": False}},  # start with the safe default
+}
 
 # Build context for the demo app image (repo_root/demo_app, which has the Dockerfile)
 DEMO_APP_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "demo_app")
@@ -102,7 +122,7 @@ class DemoAppStack(Stack):
         self.appconfig_app = appconfig.CfnApplication(
             self,
             "AppConfigApp",
-            name="MiniDebugAssist",
+            name=APPCONFIG_APPLICATION_NAME,
             description="Feature flags for Mini Debug Assist demo",
         )
 
@@ -111,7 +131,7 @@ class DemoAppStack(Stack):
             self,
             "AppConfigEnv",
             application_id=self.appconfig_app.ref,
-            name="production",
+            name=APPCONFIG_ENVIRONMENT_NAME,
             description="Production environment",
         )
 
@@ -120,24 +140,22 @@ class DemoAppStack(Stack):
             self,
             "AppConfigProfile",
             application_id=self.appconfig_app.ref,
-            name="feature-flags",
+            name=APPCONFIG_PROFILE_NAME,
             location_uri="hosted",
             type="AWS.AppConfig.FeatureFlags",
         )
 
-        # Hosted Configuration (initial flags)
-        initial_flags = {
-            "DISCOUNT_V2": "off",  # Start with safe default
-        }
-
-        import json
-
+        # Hosted Configuration (initial flags). A FeatureFlags profile only accepts
+        # the AWS.AppConfig.FeatureFlags schema: "version": "1", a "flags"
+        # definition and "values" per flag. Keys must match ^[a-z][a-zA-Z\d_-]{0,63}$,
+        # so the code-level DISCOUNT_V2 flag is stored as discount_v2
+        # (demo_app/feature_flags.py does that mapping when reading).
         self.appconfig_config = appconfig.CfnHostedConfigurationVersion(
             self,
             "AppConfigInitialFlags",
             application_id=self.appconfig_app.ref,
             configuration_profile_id=self.appconfig_profile.ref,
-            content=json.dumps(initial_flags),
+            content=json.dumps(FEATURE_FLAGS_DOCUMENT),
             content_type="application/json",
         )
 
@@ -150,6 +168,19 @@ class DemoAppStack(Stack):
             growth_factor=100,
             replicate_to="NONE",
             final_bake_time_in_minutes=0,
+        )
+
+        # Deploy the hosted version to the environment. Without a deployment,
+        # StartConfigurationSession/GetLatestConfiguration return nothing.
+        self.appconfig_deployment = appconfig.CfnDeployment(
+            self,
+            "AppConfigDeployment",
+            application_id=self.appconfig_app.ref,
+            environment_id=self.appconfig_env.ref,
+            configuration_profile_id=self.appconfig_profile.ref,
+            configuration_version=self.appconfig_config.attr_version_number,
+            deployment_strategy_id=self.appconfig_strategy.ref,
+            description="Initial feature flags (discount_v2 off)",
         )
 
         # ===== ECS Fargate Service =====
@@ -172,17 +203,6 @@ class DemoAppStack(Stack):
             )
         )
 
-        # Grant X-Ray tracing
-        task_definition.add_to_task_role_policy(
-            iam.PolicyStatement(
-                actions=[
-                    "xray:PutTraceSegments",
-                    "xray:PutTelemetryRecords",
-                ],
-                resources=["*"],
-            )
-        )
-
         # Container: the real FastAPI demo app, built from demo_app/Dockerfile.
         # `cdk synth` only copies demo_app/ into cdk.out (no Docker needed, so CI
         # works without Docker or AWS credentials); `cdk deploy` builds the image
@@ -202,8 +222,10 @@ class DemoAppStack(Stack):
             environment={
                 "USE_AWS_APPCONFIG": "true",
                 "APPCONFIG_APPLICATION": self.appconfig_app.name,
-                "APPCONFIG_ENVIRONMENT": "production",
-                "APPCONFIG_CONFIGURATION": "feature-flags",
+                "APPCONFIG_ENVIRONMENT": self.appconfig_env.name,
+                "APPCONFIG_CONFIGURATION": self.appconfig_profile.name,
+                # Region for the AppConfig Data client (demo_app/feature_flags.py)
+                "AWS_REGION": self.region,
             },
         )
 

@@ -113,17 +113,20 @@ class AgentStack(Stack):
         construct_id: str,
         demo_app_stack: DemoAppStack,
         github_repo: str,
+        github_token_secret_arn: str,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
         # ===== GitHub Token Secret =====
-        # Import existing secret created by make setup-secrets
-        # The secret must be created before deploying with: make setup-secrets
-        self.github_token_secret = secretsmanager.Secret.from_secret_name_v2(
+        # Import the secret created by `make setup-secrets` by its COMPLETE ARN
+        # (with the 6-character suffix). ECS resolves secret fields by full ARN;
+        # from_secret_name_v2 only yields a partial ARN. infra/deploy_config.py
+        # looks the ARN up (`make deploy`) or uses a placeholder for offline synth.
+        self.github_token_secret = secretsmanager.Secret.from_secret_complete_arn(
             self,
             "GitHubToken",
-            secret_name="mini-debug-assist/github-token",
+            github_token_secret_arn,
         )
 
         # ===== DynamoDB Deduplication Table =====
@@ -196,13 +199,22 @@ class AgentStack(Stack):
                 sid="CloudWatchLogsRead",
                 actions=[
                     "logs:StartQuery",
-                    "logs:GetQueryResults",
                     "logs:DescribeLogStreams",
                     "logs:GetLogEvents",
                 ],
                 resources=[
                     demo_app_stack.log_group.log_group_arn,
                 ],
+            )
+        )
+
+        # GetQueryResults takes only a query ID, not a log group, so it can't be
+        # scoped to the demo log group: it needs "*". (StopQuery isn't used.)
+        self.agent_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="CloudWatchLogsQueryResults",
+                actions=["logs:GetQueryResults"],
+                resources=["*"],
             )
         )
 

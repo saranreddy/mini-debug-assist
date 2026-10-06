@@ -48,21 +48,10 @@ app = FastAPI(
 )
 
 
-# ===== Optional AWS X-Ray Tracing =====
-# Maps to Uber's Jaeger distributed tracing (queried via jaeger MCP)
-
-USE_XRAY = config.use_aws and True  # Enable if you have X-Ray daemon
-
-if USE_XRAY:
-    try:
-        from aws_xray_sdk.core import xray_recorder
-
-        xray_recorder.configure(service="MiniDebugAssist-Demo")
-        # Note: FastAPI support is limited, but this shows the pattern
-        logger.info("X-Ray tracing enabled")
-    except ImportError:
-        logger.warning("aws-xray-sdk not installed, tracing disabled")
-        USE_XRAY = False
+# ===== Tracing =====
+# The demo app does not emit X-Ray traces (no X-Ray SDK or daemon/ADOT sidecar).
+# The agent investigates from CloudWatch Logs, which carry the stack trace.
+# See README "X-Ray" for how to add tracing.
 
 
 # ===== Middleware for logging =====
