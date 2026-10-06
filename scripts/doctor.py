@@ -118,8 +118,7 @@ def check_github_repo():
     except deploy_config.DeployConfigError:
         return (
             False,
-            "⚠️  GITHUB_REPO not set yet: before make deploy, set "
-            "GITHUB_REPO=<your-github-user>/mini-debug-assist in .env",
+            "⚠️  GITHUB_REPO not set yet: set it in .env before make deploy",
         )
     return True, f"✅ GITHUB_REPO: {repo} (the agent opens PRs here)"
 

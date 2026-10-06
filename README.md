@@ -21,7 +21,7 @@ A learning-focused demo of modern agentic patterns for platform engineers: Multi
 
 [![Mini Debug Assist Deploy Walkthrough Video](docs/deploy-walkthrough-poster.png)](docs/deploy-walkthrough.mp4)
 
-*Watch this when you're ready to run it in your own AWS account: a 4:38 step-by-step of the Quick Start, from `make doctor` to `make destroy` (terminal output is illustrative).*
+*Watch this when you're ready to run it in your own AWS account: a 4:43 step-by-step of the Quick Start, from `make doctor` to `make destroy` (terminal output is illustrative).*
 
 ## Who Should Use This
 
