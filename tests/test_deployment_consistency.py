@@ -524,3 +524,46 @@ def test_make_deploy_checks_github_repo_before_cdk_deploy():
     makefile = (REPO_ROOT / "Makefile").read_text()
     recipe = makefile.split("\ndeploy:", 1)[1].split("\n\n", 1)[0]
     assert recipe.index("infra/deploy_config.py") < recipe.index("cdk deploy")
+
+
+def test_agent_github_token_injects_only_the_token_field(synth):
+    """setup_github_token.sh stores {"token": ..., "repo": ...}; the agent needs just the token."""
+    templates, _ = synth
+    agent = templates["MiniDebugAssist-Agent"]
+    task_defs = [
+        r
+        for r in _resources(agent, "AWS::ECS::TaskDefinition")
+        if any(c.get("Secrets") for c in r["Properties"]["ContainerDefinitions"])
+    ]
+    assert task_defs, "agent task definition with secrets not found"
+    secrets = {
+        s["Name"]: s["ValueFrom"]
+        for c in task_defs[0]["Properties"]["ContainerDefinitions"]
+        for s in c.get("Secrets", [])
+    }
+    assert "GITHUB_TOKEN" in secrets
+    value_from = json.dumps(secrets["GITHUB_TOKEN"])
+    assert "mini-debug-assist/github-token" in value_from
+    assert ":token::" in value_from, f"GITHUB_TOKEN must select the token field: {value_from}"
+
+
+def test_agent_bedrock_policy_matches_inference_profile_arns(synth):
+    """Inference-profile ARNs carry the account ID; models are allowed in every region."""
+    templates, _ = synth
+    agent = templates["MiniDebugAssist-Agent"]
+    statements = [
+        st
+        for p in _resources(agent, "AWS::IAM::Policy")
+        for st in p["Properties"]["PolicyDocument"]["Statement"]
+        if st.get("Sid") == "BedrockInvokeModel"
+    ]
+    assert len(statements) == 1
+    resources = statements[0]["Resource"]
+    profiles = [json.dumps(r) for r in resources if "inference-profile" in json.dumps(r)]
+    assert profiles, "no inference-profile resources"
+    for r in profiles:
+        assert "AWS::AccountId" in r, f"inference-profile ARN is missing the account: {r}"
+    for prefix in ("us.anthropic.claude-", "global.anthropic.claude-"):
+        assert any(prefix in r for r in profiles), f"no {prefix}* inference profile allowed"
+    assert "arn:aws:bedrock:*::foundation-model/anthropic.claude-*" in resources
+    assert "arn:aws:bedrock:::foundation-model/anthropic.claude-*" in resources

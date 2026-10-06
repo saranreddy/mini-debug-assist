@@ -145,18 +145,15 @@ class AgentStack(Stack):
                     "bedrock:InvokeModelWithResponseStream",
                 ],
                 resources=[
-                    # Cross-region inference profiles for Claude 5 generation
-                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-sonnet-5-5",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-opus-5-5",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/global.anthropic.claude-sonnet-5-5",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/global.anthropic.claude-opus-5-5",
-                    # Direct model access
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-sonnet-5-5",
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-opus-5-5",
-                    # Wildcard for flexibility (supports Claude 4.x, 5.x)
-                    f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-*",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/us.anthropic.claude-*",
-                    f"arn:aws:bedrock:{self.region}::inference-profile/global.anthropic.claude-*",
+                    # Inference profiles (us./global. prefixes, see agent/config.py).
+                    # System-defined profile ARNs include the account ID.
+                    f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/us.anthropic.claude-*",
+                    f"arn:aws:bedrock:{self.region}:{self.account}:inference-profile/global.anthropic.claude-*",
+                    # A cross-region profile routes to the foundation model in any of
+                    # its destination regions, so allow the model in every region.
+                    "arn:aws:bedrock:*::foundation-model/anthropic.claude-*",
+                    # Global profiles authorize against a region-less model ARN.
+                    "arn:aws:bedrock:::foundation-model/anthropic.claude-*",
                 ],
             )
         )
@@ -286,7 +283,11 @@ class AgentStack(Stack):
                 "GITHUB_REPO": github_repo,
             },
             secrets={
-                "GITHUB_TOKEN": ecs.Secret.from_secrets_manager(self.github_token_secret),
+                # The secret is JSON {"token": ..., "repo": ...} (scripts/setup_github_token.sh);
+                # inject only the token, not the whole JSON document.
+                "GITHUB_TOKEN": ecs.Secret.from_secrets_manager(
+                    self.github_token_secret, field="token"
+                ),
             },
         )
 
