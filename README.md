@@ -9,11 +9,19 @@
 
 A learning-focused demo of modern agentic patterns for platform engineers: Multi-agent orchestration via LangGraph, real-world AWS integration (Bedrock/CloudWatch/DynamoDB), MCP tool protocols, and autonomous code modification with safety guardrails.
 
-## Watch the 2.5-Minute Explainer
+## Watch the Videos
+
+### What it is: the 2.5-Minute Explainer
 
 [![Mini Debug Assist Explainer Video](docs/explainer-poster.png)](docs/explainer.mp4)
 
-*A 2:37 walkthrough of the architecture, agent pipeline, and AWS deployment—aimed at people who know AWS but not necessarily code.*
+*Watch this first if you know AWS but not necessarily code: a 2:37 tour of the architecture, agent pipeline, and AWS deployment.*
+
+### How to deploy it in your own AWS account: the Deploy Walkthrough
+
+[![Mini Debug Assist Deploy Walkthrough Video](docs/deploy-walkthrough-poster.png)](docs/deploy-walkthrough.mp4)
+
+*Watch this when you're ready to run it in your own AWS account: a 4:38 step-by-step of the Quick Start, from `make doctor` to `make destroy` (terminal output is illustrative).*
 
 ## Who Should Use This
 
