@@ -567,3 +567,238 @@ def test_agent_bedrock_policy_matches_inference_profile_arns(synth):
         assert any(prefix in r for r in profiles), f"no {prefix}* inference profile allowed"
     assert "arn:aws:bedrock:*::foundation-model/anthropic.claude-*" in resources
     assert "arn:aws:bedrock:::foundation-model/anthropic.claude-*" in resources
+
+
+# ===== Alarm -> EventBridge -> agent task =====
+
+ERROR_ALARM = "mini-debug-assist-error-alarm"
+
+# A CloudWatch "Alarm State Change" event in the shape EventBridge delivers.
+SAMPLE_ALARM_EVENT = {
+    "version": "0",
+    "id": "c4c1c1c9-6542-e61b-6ef0-8c4d36933a92",
+    "detail-type": "CloudWatch Alarm State Change",
+    "source": "aws.cloudwatch",
+    "account": "123456789012",
+    "time": "2026-10-06T16:05:00Z",
+    "region": "us-east-1",
+    "resources": [f"arn:aws:cloudwatch:us-east-1:123456789012:alarm:{ERROR_ALARM}"],
+    "detail": {
+        "alarmName": ERROR_ALARM,
+        "state": {
+            "value": "ALARM",
+            "reason": (
+                "Threshold Crossed: 1 out of the last 1 datapoints [12.0 (06/10/26 16:00:00)] "
+                "was greater than or equal to the threshold (10.0) "
+                "(minimum 1 datapoint for OK -> ALARM transition)."
+            ),
+            "timestamp": "2026-10-06T16:05:00.123+0000",
+        },
+        "previousState": {"value": "OK", "reason": "Threshold Crossed", "timestamp": "x"},
+        "configuration": {
+            "metrics": [
+                {
+                    "id": "m1",
+                    "metricStat": {
+                        "metric": {
+                            "namespace": "MiniDebugAssist/Demo",
+                            "name": "ErrorCount",
+                            "dimensions": {},
+                        },
+                        "period": 300,
+                        "stat": "Sum",
+                    },
+                    "returnData": True,
+                }
+            ]
+        },
+    },
+}
+
+
+def _with_alarm(name, state):
+    event = json.loads(json.dumps(SAMPLE_ALARM_EVENT))
+    event["detail"]["alarmName"] = name
+    event["detail"]["state"]["value"] = state
+    return event
+
+
+def _pattern_matches(pattern, event):
+    """Exact-value EventBridge matching (lists of allowed values, nested objects)."""
+    for key, allowed in pattern.items():
+        if key not in event:
+            return False
+        if isinstance(allowed, dict):
+            if not isinstance(event[key], dict) or not _pattern_matches(allowed, event[key]):
+                return False
+        else:
+            assert all(not isinstance(v, dict) for v in allowed), f"unsupported matcher: {allowed}"
+            if event[key] not in allowed:
+                return False
+    return True
+
+
+def _trigger_rule(templates):
+    rules = [
+        r
+        for r in _resources(templates["MiniDebugAssist-Agent"], "AWS::Events::Rule")
+        if r["Properties"].get("Name") == "mini-debug-assist-agent-trigger"
+    ]
+    assert len(rules) == 1
+    return rules[0]["Properties"]
+
+
+def _json_path(event, path):
+    """Resolve a simple $.a.b.c path the way EventBridge input paths do."""
+    assert path.startswith("$")
+    value = event
+    for part in [p for p in path[1:].split(".") if p]:
+        value = value[part]
+    return value
+
+
+def _render_input_template(transformer, event):
+    """
+    Render an InputTransformer like EventBridge: a string variable placed unquoted
+    gets quotes added (values are not escaped); objects/arrays are inserted as-is.
+    """
+    template = transformer["InputTemplate"]
+    for var, path in transformer["InputPathsMap"].items():
+        value = _json_path(event, path)
+        rendered = f'"{value}"' if isinstance(value, str) else json.dumps(value)
+        template = template.replace(f"<{var}>", rendered)
+    return template
+
+
+def test_trigger_rule_matches_only_the_error_alarm_entering_alarm(synth):
+    templates, _ = synth
+    pattern = _trigger_rule(templates)["EventPattern"]
+    alarm = _single(templates["MiniDebugAssist-Observability"], "AWS::CloudWatch::Alarm")
+    assert alarm["AlarmName"] == ERROR_ALARM
+    assert pattern["source"] == ["aws.cloudwatch"]
+    assert pattern["detail-type"] == ["CloudWatch Alarm State Change"]
+    assert pattern["detail"] == {"alarmName": [ERROR_ALARM], "state": {"value": ["ALARM"]}}
+
+    assert _pattern_matches(pattern, SAMPLE_ALARM_EVENT)
+    assert not _pattern_matches(pattern, _with_alarm("some-other-alarm", "ALARM"))
+    assert not _pattern_matches(pattern, _with_alarm(ERROR_ALARM, "OK"))
+    assert not _pattern_matches(pattern, _with_alarm(ERROR_ALARM, "INSUFFICIENT_DATA"))
+
+
+def test_alarm_name_is_shared_between_alarm_and_rule():
+    """One constant feeds both the alarm and the rule, so they cannot drift apart."""
+    stacks = REPO_ROOT / "infra" / "stacks"
+    assert f'ERROR_ALARM_NAME = "{ERROR_ALARM}"' in (stacks / "demo_app_stack.py").read_text()
+    for name in ("agent_stack.py", "observability_stack.py"):
+        source = (stacks / name).read_text()
+        assert "ERROR_ALARM_NAME" in source
+        assert f'"{ERROR_ALARM}"' not in source, f"{name} hardcodes the alarm name"
+
+
+def _rendered_overrides(templates):
+    targets = _trigger_rule(templates)["Targets"]
+    assert len(targets) == 1
+    transformer = targets[0]["InputTransformer"]
+    rendered = _render_input_template(transformer, SAMPLE_ALARM_EVENT)
+    return transformer, json.loads(rendered)
+
+
+def test_trigger_input_renders_valid_overrides_with_string_env_values(synth):
+    templates, _ = synth
+    transformer, overrides = _rendered_overrides(templates)
+    template = transformer["InputTemplate"]
+
+    # Every placeholder has an input path, and none is wrapped in quotes (EventBridge
+    # adds the quotes for string values; pre-quoted values would not be escaped).
+    placeholders = set(re.findall(r"<([A-Za-z0-9_.-]+)>", template))
+    assert placeholders == set(transformer["InputPathsMap"])
+    assert '"<' not in template
+
+    # Each path is a plain string in a real alarm event (never an object or array).
+    for var, path in transformer["InputPathsMap"].items():
+        assert isinstance(_json_path(SAMPLE_ALARM_EVENT, path), str), f"{var} -> {path}"
+
+    task_def = [
+        r
+        for r in _resources(templates["MiniDebugAssist-Agent"], "AWS::ECS::TaskDefinition")
+        if r["Properties"].get("Family") == "mini-debug-assist-agent"
+    ][0]
+    container_names = {c["Name"] for c in task_def["Properties"]["ContainerDefinitions"]}
+
+    assert list(overrides) == ["containerOverrides"]
+    (override,) = overrides["containerOverrides"]
+    assert override["name"] in container_names
+    env = override["environment"]
+    assert all(set(e) == {"name", "value"} for e in env)
+    assert all(isinstance(e["value"], str) for e in env), env
+    values = {e["name"]: e["value"] for e in env}
+    assert values == {
+        "ISSUE_SOURCE": "alarm",
+        "ALARM_NAME": ERROR_ALARM,
+        "ALARM_STATE": "ALARM",
+        "ALARM_REASON": SAMPLE_ALARM_EVENT["detail"]["state"]["reason"],
+        "ALARM_TIME": "2026-10-06T16:05:00Z",
+        "ALARM_REGION": "us-east-1",
+        "ALARM_ACCOUNT": "123456789012",
+        "ALARM_EVENT_ID": SAMPLE_ALARM_EVENT["id"],
+    }
+    # ECS caps container overrides at 8192 characters
+    assert len(json.dumps(overrides)) < 8192
+
+
+def test_cli_rebuilds_the_alarm_event_from_rendered_env(synth, monkeypatch):
+    """The env vars EventBridge sets are enough for cli.py and the dedup key."""
+    from agent.cli import ALARM_ENV_FIELDS, load_issue_from_aws
+    from agent.dedup import get_error_signature
+
+    templates, _ = synth
+    _, overrides = _rendered_overrides(templates)
+    env = {e["name"]: e["value"] for e in overrides["containerOverrides"][0]["environment"]}
+    assert set(ALARM_ENV_FIELDS) <= set(env), "cli.py reads a variable the rule does not set"
+
+    monkeypatch.delenv("ALARM_EVENT_JSON", raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    issue = load_issue_from_aws(None, None)
+
+    assert issue["issue_id"] == f"ALARM-{ERROR_ALARM}-2026-10-06"
+    assert issue["alarm_name"] == ERROR_ALARM
+    assert issue["alarm_state"] == "ALARM"
+    assert issue["alarm_reason"].startswith("Threshold Crossed")
+    assert issue["timestamp"] == "2026-10-06T16:05:00Z"
+    assert issue["alarm_event_id"] == SAMPLE_ALARM_EVENT["id"]
+    assert issue["region"] == "us-east-1"
+    assert issue["account"] == "123456789012"
+    # No dimensions on the deployed alarm: no narrowing filter, so the log query
+    # falls back to level = "ERROR" instead of exception_type = "Unknown".
+    assert issue["error_type"] == ""
+    assert issue["endpoint"] == ""
+
+    # Dedup key: stable for the same alarm across events, different for another alarm
+    sig = get_error_signature(issue["alarm_name"], issue["error_type"], issue["endpoint"])
+    monkeypatch.setenv("ALARM_EVENT_ID", "another-event")
+    monkeypatch.setenv("ALARM_TIME", "2026-10-06T16:20:00Z")
+    again = load_issue_from_aws(None, None)
+    assert get_error_signature(again["alarm_name"], again["error_type"], again["endpoint"]) == sig
+    assert get_error_signature("other-alarm", "", "") != sig
+
+
+def test_cli_keeps_the_alarm_event_json_fallback(monkeypatch):
+    from agent.cli import alarm_event_from_env, load_issue_from_aws
+
+    assert alarm_event_from_env({}) is None
+    assert alarm_event_from_env({"ALARM_EVENT_JSON": json.dumps(SAMPLE_ALARM_EVENT)}) == (
+        SAMPLE_ALARM_EVENT
+    )
+    # Per-field variables win over ALARM_EVENT_JSON when both are present
+    both = {"ALARM_NAME": "from-fields", "ALARM_EVENT_JSON": json.dumps(SAMPLE_ALARM_EVENT)}
+    assert alarm_event_from_env(both)["detail"]["alarmName"] == "from-fields"
+
+    for name in ("ALARM_NAME", "ALARM_STATE", "ALARM_REASON", "ALARM_TIME", "ALARM_EVENT_ID"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ISSUE_SOURCE", "alarm")
+    monkeypatch.setenv("ALARM_EVENT_JSON", json.dumps(SAMPLE_ALARM_EVENT))
+    issue = load_issue_from_aws(None, None)
+    assert issue["alarm_name"] == ERROR_ALARM
+    assert issue["metric_name"] == "ErrorCount"
+    assert issue["metric_namespace"] == "MiniDebugAssist/Demo"

@@ -45,6 +45,11 @@ from constructs import Construct
 # troubleshooting commands, and tests/test_deployment_consistency.py all use these.
 METRIC_NAMESPACE = "MiniDebugAssist/Demo"
 ERROR_METRIC_NAME = "ErrorCount"
+# The alarm on that metric (created in observability_stack.py). The agent's
+# EventBridge rule in agent_stack.py listens for exactly this alarm, so both
+# import the name from here (observability_stack imports agent_stack, so the
+# constant can't live there without a circular import).
+ERROR_ALARM_NAME = "mini-debug-assist-error-alarm"
 DEMO_APP_PORT = 8000
 
 # Build context for the demo app image (repo_root/demo_app, which has the Dockerfile)

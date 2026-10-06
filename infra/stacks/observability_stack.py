@@ -26,7 +26,7 @@ from aws_cdk import (
 from constructs import Construct
 
 from .agent_stack import AgentStack
-from .demo_app_stack import DemoAppStack
+from .demo_app_stack import ERROR_ALARM_NAME, DemoAppStack
 
 
 class ObservabilityStack(Stack):
@@ -70,7 +70,7 @@ class ObservabilityStack(Stack):
         self.error_alarm = cloudwatch.Alarm(
             self,
             "HighErrorRateAlarm",
-            alarm_name="mini-debug-assist-error-alarm",
+            alarm_name=ERROR_ALARM_NAME,
             alarm_description="Triggers when error rate is high (from structured logs)",
             metric=error_metric,
             threshold=10,  # 10 or more errors in one 5-minute period

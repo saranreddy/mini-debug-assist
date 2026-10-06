@@ -50,10 +50,27 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-from .demo_app_stack import DemoAppStack
+from .demo_app_stack import ERROR_ALARM_NAME, DemoAppStack
 
 # Explicit rule name so scripts/smoke.py can look the rule up directly
 AGENT_TRIGGER_RULE_NAME = "mini-debug-assist-agent-trigger"
+
+# Name of the agent container (task definition container id, used in overrides)
+AGENT_CONTAINER_NAME = "AgentContainer"
+
+# Text fields of the CloudWatch "Alarm State Change" event handed to the agent task
+# as environment variables (agent/cli.py rebuilds the event from them). Each path is
+# a string in every alarm state-change event; ECS only accepts string env values, so
+# never pass a JSON object or array here.
+ALARM_EVENT_ENV_FIELDS = {
+    "ALARM_NAME": "$.detail.alarmName",
+    "ALARM_STATE": "$.detail.state.value",
+    "ALARM_REASON": "$.detail.state.reason",
+    "ALARM_TIME": "$.time",
+    "ALARM_REGION": "$.region",
+    "ALARM_ACCOUNT": "$.account",
+    "ALARM_EVENT_ID": "$.id",
+}
 
 # The agent image is built from the repo root (agent/Dockerfile copies pyproject.toml,
 # README.md, agent/, demo_app/, mcp_servers/, skills/, tests/ from there).
@@ -263,7 +280,7 @@ class AgentStack(Stack):
 
         # Agent container with built image
         self.agent_container = self.agent_task_def.add_container(
-            "AgentContainer",
+            AGENT_CONTAINER_NAME,
             image=self.agent_image,
             logging=ecs.LogDriver.aws_logs(
                 stream_prefix="debug-agent",
@@ -301,10 +318,11 @@ class AgentStack(Stack):
             event_pattern=events.EventPattern(
                 source=["aws.cloudwatch"],
                 detail_type=["CloudWatch Alarm State Change"],
+                # Only the demo app's error alarm going into ALARM, so no other
+                # alarm in the account can launch the agent.
                 detail={
+                    "alarmName": [ERROR_ALARM_NAME],
                     "state": {"value": ["ALARM"]},
-                    # Optional: filter for specific alarms
-                    # "alarmName": [{"prefix": "MiniDebugAssist-"}]
                 },
             ),
             enabled=True,
@@ -319,18 +337,19 @@ class AgentStack(Stack):
                 # its image from ECR and reach Bedrock, Secrets Manager, and GitHub.
                 subnet_selection=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
                 assign_public_ip=True,
+                # String fields only: EventBridge inserts a JSON object unquoted, and
+                # ECS RunTask rejects non-string environment values.
                 container_overrides=[
                     targets.ContainerOverride(
-                        container_name="AgentContainer",
+                        container_name=AGENT_CONTAINER_NAME,
                         environment=[
-                            targets.TaskEnvironmentVariable(
-                                name="ISSUE_SOURCE",
-                                value="alarm",
-                            ),
-                            targets.TaskEnvironmentVariable(
-                                name="ALARM_EVENT_JSON",
-                                value=events.EventField.from_path("$"),
-                            ),
+                            targets.TaskEnvironmentVariable(name="ISSUE_SOURCE", value="alarm"),
+                            *[
+                                targets.TaskEnvironmentVariable(
+                                    name=name, value=events.EventField.from_path(path)
+                                )
+                                for name, path in ALARM_EVENT_ENV_FIELDS.items()
+                            ],
                         ],
                     )
                 ],
