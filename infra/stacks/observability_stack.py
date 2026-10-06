@@ -57,10 +57,12 @@ class ObservabilityStack(Stack):
 
         # ===== CloudWatch Alarms =====
 
-        # High error rate alarm using custom metric from logs
+        # High error rate alarm on the metric published by the demo app's log metric
+        # filter. Same namespace, same name, and no dimensions, so the alarm sees
+        # exactly the datapoints the filter emits.
         error_metric = cloudwatch.Metric(
             namespace=demo_app_stack.metric_namespace,
-            metric_name="ErrorCount",
+            metric_name=demo_app_stack.error_metric_name,
             statistic="Sum",
             period=Duration.minutes(5),
         )
@@ -71,9 +73,9 @@ class ObservabilityStack(Stack):
             alarm_name="mini-debug-assist-error-alarm",
             alarm_description="Triggers when error rate is high (from structured logs)",
             metric=error_metric,
-            threshold=10,  # 10 errors in 5 minutes
+            threshold=10,  # 10 or more errors in one 5-minute period
             evaluation_periods=1,
-            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
         )
 

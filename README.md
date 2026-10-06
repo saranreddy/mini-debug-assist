@@ -402,7 +402,7 @@ aws cloudwatch describe-alarms --alarm-names mini-debug-assist-error-alarm
 
 # Check metric data
 aws cloudwatch get-metric-statistics \
-  --namespace "MiniDebugAssist/DemoApp" \
+  --namespace "MiniDebugAssist/Demo" \
   --metric-name ErrorCount \
   --start-time $(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%S) \
   --end-time $(date -u +%Y-%m-%dT%H:%M:%S) \
@@ -412,7 +412,7 @@ aws cloudwatch get-metric-statistics \
 
 **Common causes**:
 - Not enough errors (need 10 in 5 minutes): run `make trigger-bug` again
-- Metric filter not working: check CloudWatch Logs for demo app errors
+- Metric filter not working: check `/aws/ecs/mini-debug-assist-demo` in CloudWatch Logs for JSON lines with `"level": "ERROR"`
 - Alarm evaluation period not met: wait full 5 minutes
 
 ### PR Not Created
@@ -460,8 +460,9 @@ cdk bootstrap aws://ACCOUNT-ID/REGION
 
 **Fix**:
 ```bash
-# Test Docker locally
-docker build -t mini-debug-assist-agent -f Dockerfile .
+# Test the Docker builds locally (from the repo root)
+docker build -t mini-debug-assist-agent -f agent/Dockerfile .
+docker build -t mini-debug-assist-demo demo_app/
 
 # If successful, try deploy again
 make deploy
@@ -503,7 +504,9 @@ mini-debug-assist/
 │
 ├── demo_app/                   # FastAPI app with planted bugs
 │   ├── main.py
-│   └── config.py
+│   ├── config.py
+│   ├── requirements.txt        # Container runtime deps
+│   └── Dockerfile              # Image built by CDK (from_asset)
 │
 ├── infra/                      # AWS CDK infrastructure
 │   ├── app.py                  # CDK app

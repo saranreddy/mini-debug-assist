@@ -46,6 +46,9 @@ from constructs import Construct
 
 from .demo_app_stack import DemoAppStack
 
+# Explicit rule name so scripts/smoke.py can look the rule up directly
+AGENT_TRIGGER_RULE_NAME = "mini-debug-assist-agent-trigger"
+
 
 class AgentStack(Stack):
     """Stack for the debugging agent infrastructure."""
@@ -249,6 +252,7 @@ class AgentStack(Stack):
         self.alarm_trigger_rule = events.Rule(
             self,
             "AlarmTriggerRule",
+            rule_name=AGENT_TRIGGER_RULE_NAME,
             description="Trigger debug agent when CloudWatch alarm enters ALARM state",
             event_pattern=events.EventPattern(
                 source=["aws.cloudwatch"],

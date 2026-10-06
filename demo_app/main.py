@@ -14,17 +14,25 @@ import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pythonjsonlogger import jsonlogger
 
 from demo_app.config import config
+
+try:  # python-json-logger >= 3.1
+    from pythonjsonlogger.json import JsonFormatter
+except ImportError:  # python-json-logger 2.x
+    from pythonjsonlogger.jsonlogger import JsonFormatter
 
 # ===== Structured JSON Logging =====
 # Maps to Uber's ClickHouse-based logging platform that the agent queries
 
 logger = logging.getLogger("demo_app")
 log_handler = logging.StreamHandler()
-formatter = jsonlogger.JsonFormatter(
-    "%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d"
+# The level is emitted as "level" (not "levelname") because the CloudWatch metric
+# filter ({ $.level = "ERROR" }), the dashboard, and the agent's Logs Insights
+# queries all filter on that field.
+formatter = JsonFormatter(
+    "%(asctime)s %(name)s %(levelname)s %(message)s %(pathname)s %(lineno)d",
+    rename_fields={"levelname": "level"},
 )
 log_handler.setFormatter(formatter)
 logger.addHandler(log_handler)
